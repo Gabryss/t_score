@@ -1,0 +1,40 @@
+{
+    "debug_info": false,
+    "debug_time_s":5,
+    "save_data":true,
+
+    "pc_topic": "/cloud_map",
+    "cmd_vel_topic": "/leo05/cmd_vel",
+    "tf_topic":"/tf",
+    "height":1,
+
+    "map_resolution":0.25,
+    "local_map_size":5,
+    "global_map_size":1000,
+    "map_unknown_transparency":false,
+    "map_low_resolution_division_factor":1,
+
+    "ransac_iterations":100,
+
+    "roughness_frame_id":"map",
+    "roughness_topic_global": "/roughness_costmap",
+    "roughness_topic_local": "/roughness_costmap_local",
+    "roughness_lidar_threshold": 0.2,
+    "roughness_shift":0.003,
+
+
+    "imu_topic": "/livox/imu",
+    "imu_sampling_frequency":200,
+    "imu_filter_frequency":27.5,
+    "imu_filter_bandwidth":5.0,
+    "roughness_imu_threshold": 0.2,
+    "imu_window_size":100,
+    "activate_imu_correction": true,
+
+    "rls_forgeting_factor":0.9,
+    "activate_idw":false,
+    "idw_power":2.0,
+
+    "tf_frequency":0.1,
+    "roughness_frequency":1
+}

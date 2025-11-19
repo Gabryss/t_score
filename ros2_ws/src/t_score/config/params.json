@@ -1,0 +1,21 @@
+{
+    "pc_topic": "/cloud_map",
+    "tf_topic":"/tf",
+    "height":1,
+
+    "map_resolution":0.25,
+    "local_map_size":5,
+    "global_map_size":1000,
+    "map_unknown_transparency":false,
+    "map_low_resolution_division_factor":1,
+
+    "ransac_iterations":100,
+
+    "traversability_frame_id":"map",
+    "traversability_topic_global": "/traversability_costmap",
+    "traversability_topic_local": "/traversability_costmap_local",
+
+
+    "tf_frequency":0.1,
+    "traversability_frequency":1
+}
