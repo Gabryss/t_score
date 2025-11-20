@@ -13,7 +13,7 @@ def generate_launch_description():
         
     node=Node(
         package = 't_score',
-        name = 'roughness_estimation',
+        name = 'traversability_score_node',
         executable = 't_score_node',
         parameters = [
             {"param_path": config},

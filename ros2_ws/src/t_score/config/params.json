@@ -3,7 +3,7 @@
     "tf_topic":"/tf",
     "height":1,
 
-    "map_resolution":0.25,
+    "map_resolution":0.5,
     "local_map_size":5,
     "global_map_size":1000,
     "map_unknown_transparency":false,
@@ -16,6 +16,5 @@
     "traversability_topic_local": "/traversability_costmap_local",
 
 
-    "tf_frequency":0.1,
-    "traversability_frequency":1
+    "update_frequency":1.0
 }

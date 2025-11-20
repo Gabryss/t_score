@@ -6,13 +6,13 @@
  * 
  * @copyright Gabriel Garcia | 2025
  * @brief Implementation file for Class ROSWrapper.
- * @details This is a ROS wrapper that subscribe to a pointcloud and publish a roughness costmap.
+ * @details This is a ROS wrapper that subscribe to a pointcloud and publish a traversability costmap.
  */
 #include "ROSWrapper.hpp"
 
 
 
-ROSWrapper::ROSWrapper(): Node("roughness_node", rclcpp::NodeOptions().use_intra_process_comms(true))
+ROSWrapper::ROSWrapper(): Node("t_score_node", rclcpp::NodeOptions().use_intra_process_comms(true))
 {
     // =====================================================
     // GET CONFIG PARAMETERS
@@ -25,8 +25,8 @@ ROSWrapper::ROSWrapper(): Node("roughness_node", rclcpp::NodeOptions().use_intra
     local_map_size = p["local_map_size"].GetFloat();
     global_map_size = p["global_map_size"].GetFloat();
 
-    tf_frequency = p["tf_frequency"].GetFloat();
-    tf_frequency_int = tf_frequency*1000;
+    update_frequency = p["update_frequency"].GetFloat();
+    int update_frequency_int = static_cast<int>(update_frequency*1000); // Convert to ms
 
 
     // Initialize grid
@@ -36,37 +36,26 @@ ROSWrapper::ROSWrapper(): Node("roughness_node", rclcpp::NodeOptions().use_intra
 
 
 
-    // =====================================================
-    // Compute static offset (between global and local)
-    // =====================================================
-    // int global_origin_index = nb_cells_global / 2;
-    // int local_origin_index = nb_cells_local / 2;
-    // offset_static = (global_origin_index - local_origin_index);
-
-    // =====================================================
-    // Initialize global map
-    // =====================================================
-    // this->create_global_map();
+    
 
     // =====================================================
     // TRANSFORM
     // =====================================================
-    // Get transform of the robot
-    // tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
-    // tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-    // timer_tf_ = this->create_wall_timer(
-    //   std::chrono::milliseconds(tf_frequency_int),  // Call every time t (in ms)
-    //   std::bind(&ROSWrapper::lookupTransform, this)
-    // );
+    timer_tf_ = this->create_wall_timer(
+      std::chrono::milliseconds(update_frequency_int),  // Call every time t (in ms)
+      std::bind(&ROSWrapper::lookupTransform, this)
+    );
 
-    // timer_tf_ = rclcpp::create_timer(
-    //     this->get_node_base_interface(),
-    //     this->get_node_timers_interface(),
-    //     this->get_clock(),
-    //     std::chrono::milliseconds(tf_frequency_int),
-    //     std::bind(&ROSWrapper::lookupTransform, this)
-    // );
+    timer_tf_ = rclcpp::create_timer(
+        this->get_node_base_interface(),
+        this->get_node_timers_interface(),
+        this->get_clock(),
+        std::chrono::milliseconds(update_frequency_int),
+        std::bind(&ROSWrapper::lookupTransform, this)
+    );
 
 
 
@@ -83,9 +72,9 @@ ROSWrapper::ROSWrapper(): Node("roughness_node", rclcpp::NodeOptions().use_intra
     
 
     // Create publishers
-    pub_roughness_local_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(p["traversability_topic_local"].GetString(), 10);
+    pub_t_score_local_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(p["traversability_topic_local"].GetString(), 10);
 
-    pub_roughness_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(p["traversability_topic_global"].GetString(), 10);
+    pub_t_score_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(p["traversability_topic_global"].GetString(), 10);
 
 
 
@@ -115,6 +104,21 @@ void ROSWrapper::pc_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
     cloud->points.clear();
     pcl::fromROSMsg(*msg, *cloud);
+
+    // Update global map with new pointcloud data
+    for (const auto& p : cloud->points) 
+    {
+        auto [gx, gy] = grid_manager.pose_to_grid_coordinates(p.x, p.y);
+        
+        // Bounds check:
+        if (gy < 0 || gy >= static_cast<int>(grid_manager.global_grid.size()))
+            continue;
+        if (gx < 0 || gx >= static_cast<int>(grid_manager.global_grid[0].size()))
+            continue;
+        
+        grid_manager.global_grid[gy][gx].points.push_back(p);
+        grid_manager.global_grid[gy][gx].num_points += 1;
+    }
 };
 
 
@@ -124,62 +128,220 @@ void ROSWrapper::pc_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 // =====================================================
 
 
-// void ROSWrapper::lookupTransform()
-// {
-//     try {
+void ROSWrapper::lookupTransform()
+{
+    try {
+        std::cerr << "Looking up transform..." << std::endl;
+        rclcpp::Time now = this->get_clock()->now();
+        rclcpp::Time safe_time = now - rclcpp::Duration::from_seconds(0.2);  // 50 ms safety margin
 
-//       rclcpp::Time now = this->get_clock()->now();
-//       rclcpp::Time safe_time = now - rclcpp::Duration::from_seconds(0.2);  // 50 ms safety margin
 
-
-//       // RCLCPP_INFO(this->get_logger(), "Lookup transform");
+        transform_stamped = tf_buffer_->lookupTransform("map", "base_footprint", tf2::TimePointZero);
       
-//       // transform_stamped = tf_buffer_->lookupTransform("map", "base_footprint", tf2::TimePointZero);
+        robot_coordinates = {transform_stamped.transform.translation.x, transform_stamped.transform.translation.y, transform_stamped.transform.translation.z};
+        robot_coordinates_grid = grid_manager.pose_to_grid_coordinates(robot_coordinates[0], robot_coordinates[1]);
+        std::cerr << "Robot coordinates (m): (" << robot_coordinates[0] << ", " << robot_coordinates[1] << ", " << robot_coordinates[2] << ")" << std::endl;
 
-//       // if (tf_buffer_->canTransform("map", "base_footprint", safe_time, rclcpp::Duration::from_seconds(0.1))) {
-//       //     transform_stamped = tf_buffer_->lookupTransform("map", "base_footprint", safe_time, rclcpp::Duration::from_seconds(0.1));
-//       //     RCLCPP_INFO(this->get_logger(), "Transform OK at %.3f", safe_time.seconds());
-//       // } else {
-//       //     RCLCPP_WARN(this->get_logger(), "Transform not available at %.3f", safe_time.seconds());
-//       // }
-      
-//       // // Lookup transform from 'odom' to 'base_link'
-//       // rclcpp::Time now = this->get_clock()->now() - rclcpp::Duration::from_seconds(0.05);
-//       // transform_stamped = tf_buffer_->lookupTransform("map", "base_footprint", now, rclcpp::Duration::from_seconds(0.1));
-//       transform_stamped = tf_buffer_->lookupTransform("map", "base_footprint", tf2::TimePointZero);
-      
-//       roughness.pose = {transform_stamped.transform.translation.x, transform_stamped.transform.translation.y, transform_stamped.transform.translation.z};
-//       coordinates_local = {roughness.pose[0], roughness.pose[1]};
+        // Update local map based on new robot position
+        this->compute_t_score();
 
-//       // RCLCPP_INFO(this->get_logger(), "Coordinates local: %.3f, %.3f", coordinates_local[0], coordinates_local[1]);
+        // std::cerr << "UPDATEE" << std::endl;
+        // grid_manager.update_map(robot_coordinates_grid.x, robot_coordinates_grid.y);
 
 
-//       new_cell = coord_local_to_global({nb_cells_local/2, nb_cells_local/2});
-//       // new_cell = compute_offset();
+        // Publish local and global T-score maps
+        std::cerr << "Publishing T-score maps..." << std::endl;
+        publish_t_score_map(grid_manager.local_grid, true);
+        publish_t_score_map(grid_manager.global_grid, false);
 
-//       if (new_cell != current_cell)
-//       {
-//         previous_cell = current_cell;
-//         current_cell = new_cell;
-//         changed_cell = true;
-//       }
-      
-//     } 
-//     catch (const tf2::TransformException & ex) {
-//       RCLCPP_WARN(this->get_logger(), "Transform exception: %s", ex.what());
-//       if ((temp_timer>=debug_time_s*5) && debug_info)
-//       {
-//         temp_timer = 0;
-//         RCLCPP_WARN(this->get_logger(), "Could not transform 'odom' to 'base_link': %s", ex.what());
-//         RCLCPP_WARN(this->get_logger(), "Is the TF topic properly published|filled ?");
-//       }
-//       else
-//       {
-//         temp_timer +=1;
-//       }
-//     }
-// };
+    } 
+    catch (const tf2::TransformException & ex) 
+    {
+        RCLCPP_WARN(this->get_logger(), "Transform exception: %s", ex.what());
+        RCLCPP_WARN(this->get_logger(), "Could not transform 'odom' to 'base_link': %s", ex.what());
+        RCLCPP_WARN(this->get_logger(), "Is the TF topic properly published|filled ?");
 
+    }
+};
+
+// =====================================================
+// DATA PROCESSING
+// =====================================================
+
+void ROSWrapper::compute_t_score()
+{
+    // Re-init local grid (clear roughness / points)
+    grid_manager.create_grid(grid_manager.local_grid, local_map_size, local_map_size, resolution);
+
+    const int local_h = static_cast<int>(grid_manager.local_grid.size());
+    const int local_w = static_cast<int>(grid_manager.local_grid[0].size());
+    const int global_h = static_cast<int>(grid_manager.global_grid.size());
+    const int global_w = static_cast<int>(grid_manager.global_grid[0].size());
+
+    const int half_local = local_h / 2;   // since square: local_h == local_w
+
+    const int center_gx = robot_coordinates_grid.x;
+    const int center_gy = robot_coordinates_grid.y;
+
+    // For each cell in the LOCAL grid
+    for (int ly = 0; ly < local_h; ++ly)
+    {
+        for (int lx = 0; lx < local_w; ++lx)
+        {
+            // Map local indices (ly,lx) to global indices (gy,gx)
+            int gy = center_gy + (ly);
+            int gx = center_gx + (lx);
+
+            // Skip if outside global grid
+            if (gy < 0 || gy >= global_h || gx < 0 || gx >= global_w)
+                continue;
+
+            TerrainCell& gcell = grid_manager.global_grid[gy][gx];
+            TerrainCell& lcell = grid_manager.local_grid[ly][lx];
+
+            if (gcell.num_points >= 3 && gcell.points.size() >= 3)
+            {
+
+                // Check if the cell is traversable based on height-span
+                double zmin = +1e9;
+                double zmax = -1e9;
+
+                for (const auto& p : gcell.points)
+                {
+                    zmin = std::min(zmin, (double)p.z);
+                    zmax = std::max(zmax, (double)p.z);
+                }
+
+                double height_span = zmax - zmin;
+                gcell.height = height_span;
+
+                // Flag non traversable if height is too large
+                gcell.traversable = (height_span < height_thresh);
+
+                if (!gcell.traversable)
+                {
+                    // mark local copy too
+                    lcell = gcell;
+                    continue;   // skip plane fitting
+                }
+
+                std::vector<double> bestFit;
+                t_score.FitPlane(t_score.t, gcell.points, bestFit);
+                double mean_z    = t_score.CalculateMeanZ(gcell.points);
+                
+                if (bestFit.size() < 4 || t_score.distances.empty()) 
+                {
+                    // couldn't fit a valid plane
+                    lcell.roughness  = -1.0;
+                    lcell.slope      = -1.0;
+                    lcell.mean_z     = mean_z;  // or -1
+                    lcell.num_points = gcell.num_points;
+
+                    gcell.roughness  = -1.0;
+                    gcell.slope      = -1.0;
+                    gcell.mean_z     = mean_z;  // or -1
+                    continue;
+                }
+                
+
+                double roughness = t_score.CalculateRoughness(t_score.distances);
+                double slope     = t_score.CalculateSlope(bestFit);
+
+                
+
+                std::cerr << "Cell (" << gx << ", " << gy << ") "
+                << "rough=" << roughness
+                << " slope=" << slope
+                << " mean_z=" << mean_z << std::endl;
+
+                lcell.roughness  = roughness;
+                lcell.slope      = slope;
+                lcell.mean_z     = mean_z;
+                lcell.num_points = gcell.num_points;
+
+
+                gcell.roughness  = roughness;
+                gcell.slope      = slope;
+                gcell.mean_z     = mean_z;
+
+            }
+            else
+            {
+                lcell.roughness  = -1.0;
+                lcell.slope      = 0.0;
+                lcell.mean_z     = 0.0;
+                lcell.num_points = 0;
+
+                gcell.roughness  = -1.0;
+                gcell.slope      = 0.0;
+                gcell.mean_z     = 0.0;
+                gcell.num_points = 0;
+            }
+
+        }
+    }
+    // Compute step heights in local grid
+    int window_radius_cells = 5;  // 11x11 window
+    grid_manager.compute_step_heights_local(window_radius_cells);
+
+}
+
+
+
+
+// =====================================================
+// Publisher
+// =====================================================
+
+void ROSWrapper::publish_t_score_map(const TerrainGrid &grid, bool is_local)
+{
+    nav_msgs::msg::OccupancyGrid occupancy_grid_msg;
+    occupancy_grid_msg.header.stamp = this->get_clock()->now();
+    occupancy_grid_msg.header.frame_id = "map";
+
+    occupancy_grid_msg.info.resolution = resolution;
+
+    int H = grid.size();        // rows
+    int W = grid[0].size();     // cols
+
+    occupancy_grid_msg.info.height = H;
+    occupancy_grid_msg.info.width  = W;
+
+    double size_x = W * resolution;
+    double size_y = H * resolution;
+
+    if (is_local)
+    {
+        occupancy_grid_msg.info.origin.position.x = robot_coordinates[0] - size_x / 2.0;
+        occupancy_grid_msg.info.origin.position.y = robot_coordinates[1] - size_y / 2.0;
+    }
+    else
+    {
+        occupancy_grid_msg.info.origin.position.x = -size_x / 2.0;
+        occupancy_grid_msg.info.origin.position.y = -size_y / 2.0;
+    }
+
+    occupancy_grid_msg.info.origin.position.z = transform_stamped.transform.translation.z;
+    occupancy_grid_msg.info.origin.orientation.w = 1.0;
+
+    occupancy_grid_msg.data.assign(W * H, -1);
+
+    for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            int index = y * W + x;
+
+            double result = t_score.calculateTScore(grid[y][x].slope,
+                                            grid[y][x].roughness,
+                                            grid[y][x].height, grid[y][x].traversable);
+            occupancy_grid_msg.data[index] = static_cast<int8_t>(result);
+        }
+    }
+
+    if (is_local)
+        pub_t_score_local_->publish(occupancy_grid_msg);
+    else
+        pub_t_score_global_->publish(occupancy_grid_msg);
+}
 
 
 
@@ -214,53 +376,7 @@ void ROSWrapper::get_parameters(std::string parameters_path)
 
 
 
-// coordinates_grid ROSWrapper::coord_local_to_global(coordinates_grid coord)
-// {
-//   int dynamic_offset_x = 0;
-//   int dynamic_offset_y = 0;
 
-//   if (roughness.pose[0] != 0)
-//   {
-//     dynamic_offset_x = roughness.pose[0] / resolution;
-//   }
-//   if (roughness.pose[1] != 0)
-//   {
-//     dynamic_offset_y = roughness.pose[1] / resolution;
-//   }
-  
-//   int global_cell_x =  coord[0] + offset_static + dynamic_offset_x; // local coordinate + offset + dynamic offset
-//   int global_cell_y =  coord[1] + offset_static + dynamic_offset_y; // local coordinate + offset + dynamic offset
-
-//   // Ensure local coordinates remain within valid bounds
-//   global_cell_x = max(0, min(global_cell_x, nb_cells_global - 1));
-//   global_cell_y = max(0, min(global_cell_y, nb_cells_global - 1));
-
-//   return {global_cell_x, global_cell_y};
-// };
-
-// coordinates_grid ROSWrapper::coord_global_to_local(coordinates_grid coord)
-// {
-//   int dynamic_offset_x = 0;
-//   int dynamic_offset_y = 0;
-
-//   if (roughness.pose[0] != 0)
-//   {
-//     dynamic_offset_x = roughness.pose[0] / resolution;
-//   }
-//   if (roughness.pose[1] != 0)
-//   {
-//     dynamic_offset_y = roughness.pose[1] / resolution;
-//   }
-//   int local_cell_x  =  coord[0] - offset_static - dynamic_offset_x; // global coordinate - offset - dynamic offset
-//   int local_cell_y  =  coord[1] - offset_static - dynamic_offset_y; // global coordinate - offset - dynamic offset
-
-//   // Ensure local coordinates remain within valid bounds
-//   local_cell_x = max(0, min(local_cell_x, nb_cells_local - 1));
-//   local_cell_y = max(0, min(local_cell_y, nb_cells_local - 1));
-
-
-//   return {local_cell_x, local_cell_y};
-// };
 
 
 

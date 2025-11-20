@@ -6,7 +6,7 @@
  * 
  * @copyright Gabriel Garcia | 2025
  * @brief Implementation file for Class ROSWrapper.
- * @details This is a ROS wrapper that subscribe to a pointcloud and publish a roughness costmap.
+ * @details This is a ROS wrapper that subscribe to a pointcloud and publish a traversability costmap.
  */
 #include <memory>
 #include "iostream"
@@ -64,11 +64,6 @@ using coordinates = vector<double>;
 
 using coordinates_grid = vector<int>;
 
-// Used to monitor time
-struct timer_struct {
-    long long pc_roughness_timer, save_entire_pc_timer, calculating_coordonates_timer, speed_normalization_timer, calculate_observed_roughness_timer, rls_update_timer, rls_correction_timer, idw_interpolation_timer, update_global_map_timer, publish_maps_timer;
-};
-
 
 class ROSWrapper : public rclcpp::Node
 {
@@ -83,10 +78,10 @@ class ROSWrapper : public rclcpp::Node
         GridManager grid_manager;
         TScore t_score;
 
+        double height_thresh = 0.25;   // 25 cm step = non traversable
+
 
         vector<double> vector_roughness_lidar_raw;
-        vector<double> vector_roughness_lidar_raw_normalized;
-        vector<double> vector_roughness_lidar_raw_normalized_corrected;
 
 
 
@@ -97,10 +92,6 @@ class ROSWrapper : public rclcpp::Node
         vector<double> vector_coordinates_global_y;
 
 
-        // vector<Cell> vector_observed_cells;
-        vector<timer_struct> vector_times;
-        vector<TerrainGrid> vector_global_maps;
-
 
         // Local and global initialization
         float local_map_size;
@@ -108,17 +99,19 @@ class ROSWrapper : public rclcpp::Node
         int nb_cells_local;
         int nb_cells_global;
         int offset_static = 0;
-        float tf_frequency;
-        int tf_frequency_int;
+        float update_frequency;
+
+        
+
 
 
         // ===========================
         // Methods
         // ===========================
         void pc_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
-        void publish_roughness_map(const TerrainGrid &grid, bool is_local);
+        void publish_t_score_map(const TerrainGrid &grid, bool is_local);
 
-        void compute_roughness();
+        void compute_t_score();
 
 
     protected:
@@ -128,10 +121,9 @@ class ROSWrapper : public rclcpp::Node
         // ROS 2
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pc_;
 
-        rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_roughness_local_;
-        rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_roughness_global_;
+        rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_t_score_local_;
+        rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_t_score_global_;
         rclcpp::TimerBase::SharedPtr timer_tf_;
-        rclcpp::TimerBase::SharedPtr timer_roughness_;
 
 
         std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -141,36 +133,21 @@ class ROSWrapper : public rclcpp::Node
 
         // Global map
         float resolution;           // Resolution of both local and global map
-        coordinates_grid new_cell = {0,0};
-        coordinates_grid current_cell = {0,0};
-        coordinates_grid previous_cell = {0,0};
-        coordinates_grid local_grid_origin = {0,0};
-        bool changed_cell = false;
 
 
-        // Local map
-        coordinates coordinates_local = {0,0};
-
+        // Rover coordinates
+        coordinates robot_coordinates = {0,0,0};
+        GridCoord robot_coordinates_grid;
 
         // Initialize PCL pointcloud
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;        
 
         // General parameters
         rapidjson::Document p;      // Config file reader
-        bool debug_info;    
         
         // ===========================
         // Methods
         // ===========================
         void get_parameters(std::string parameters_path);
-        // void lookupTransform();
-        // void update_window_imu(double x);
-        // void create_global_map();
-        // void update_global_map(coordinates_grid offset);
-        // vector<double> convert_deque_vector(deque<double> input);
-        // vector<double> speed_normalization(vector<double>& norms);
-        // coordinates_grid coord_local_to_global(coordinates_grid coord);
-        // coordinates_grid coord_global_to_local(coordinates_grid coord);
-
-
+        void lookupTransform();
 };
