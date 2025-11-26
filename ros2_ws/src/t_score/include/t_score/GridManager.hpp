@@ -72,7 +72,7 @@ class GridManager
         TerrainCell get_cell(TerrainGrid& grid, int r, int c, int indx) const;
         void create_grid(TerrainGrid& grid, int size_m_x, int size_m_y, float res);
         void create_local_global_grids(int global_map_size, int local_map_size, float res);
-        void update_map(int rover_x, int rover_y);
+        // void update_map(int rover_x, int rover_y);
         GridCoord pose_to_grid_coordinates(double x, double y);
         void compute_step_heights_local(int window_radius_cells);
     

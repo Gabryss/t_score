@@ -295,6 +295,7 @@ void ROSWrapper::compute_t_score()
 
 void ROSWrapper::publish_t_score_map(const TerrainGrid &grid, bool is_local)
 {
+    std::vector vector<double> debug;
     nav_msgs::msg::OccupancyGrid occupancy_grid_msg;
     occupancy_grid_msg.header.stamp = this->get_clock()->now();
     occupancy_grid_msg.header.frame_id = "map";
@@ -326,6 +327,15 @@ void ROSWrapper::publish_t_score_map(const TerrainGrid &grid, bool is_local)
 
     occupancy_grid_msg.data.assign(W * H, -1);
 
+    if (is_local)
+    {   
+        std::ofstream outFile("local.csv");
+    }else
+    {
+        std::ofstream outFile("global.csv");
+    }
+
+
     for (int y = 0; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
             int index = y * W + x;
@@ -334,8 +344,32 @@ void ROSWrapper::publish_t_score_map(const TerrainGrid &grid, bool is_local)
                                             grid[y][x].roughness,
                                             grid[y][x].height, grid[y][x].traversable);
             occupancy_grid_msg.data[index] = static_cast<int8_t>(result);
+            
+            // Open an output file stream (CSV file).
+            if (!outFile.is_open()) 
+            {
+                std::cerr << "Error opening file for writing!" << std::endl;
+            }
+
+            // Write a header row (optional).
+            outFile << "Index,Raw,Filtered\n";
+
+            // Write data row by row.
+            for (size_t i = 0; i < DSP_->sinusoid.size(); i++) 
+            {
+                outFile << i << "," << DSP_->sinusoid[i] << "," << this->filteredData[i] << "\n";
+            }
+
+            outFile.close();
+            
+            // debug.push_back(static_cast<double>({result, x, y, grid[y][x].traversable, grid[y][x].slope, grid[y][x].roughness, grid[y][x].height}));
         }
     }
+
+    std::cout << "Data exported to data.csv" << std::endl;
+
+
+    std::cerr
 
     if (is_local)
         pub_t_score_local_->publish(occupancy_grid_msg);

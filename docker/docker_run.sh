@@ -15,6 +15,6 @@ docker run -it \
     --env ROS_DOMAIN_ID=${ROS_DOMAIN_ID} \
     --volume="${PWD}/../ros2_ws/src/t_score:/root/ros2_ws/src/t_score" \
     --volume="${PWD}/data:/root/ros2_ws/data" \
-    --name roughness \
+    --name t_score \
     local/t_score:humble \
     ros2 launch t_score t_score_launch.py

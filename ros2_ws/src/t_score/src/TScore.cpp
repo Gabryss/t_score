@@ -194,7 +194,7 @@ double TScore::calculateTScore(double slope, double roughness, double height, bo
 {
 
     if (!traversable)
-        return -1.0;   // non-traversable cell has T-Score = 100
+        return 100;   // non-traversable cell has T-Score = 100
 
     // Normalized metrics
     double S = std::clamp(slope     / s_crit, 0.0, 1.0);
@@ -202,8 +202,16 @@ double TScore::calculateTScore(double slope, double roughness, double height, bo
     double H = std::clamp(height    / h_crit, 0.0, 1.0);
 
     // Combined scalar traversability
-    double t_score = (w_s * S) + (w_r * R) + (w_h * H);
+    double Risk = (w_s * S) + (w_r * R) + (w_h * H);
+    double t_score = std::clamp(S, 0.0, 1.0);
 
+    // double t_score = 1.0 - Risk;
+
+    // std::cerr << "T-Score calculation: "
+    //           << "slope=" << slope << " S=" << S << ", "
+    //           << "roughness=" << roughness << " R=" << R << ", "
+    //           << "height=" << height << " H=" << H << " => "
+    //           << "Risk=" << Risk << ", T-Score=" << t_score << std::endl;
 
     // Map into [0,100]
     return std::clamp(t_score * 100.0, 0.0, 100.0);

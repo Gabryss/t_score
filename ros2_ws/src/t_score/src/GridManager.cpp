@@ -55,49 +55,6 @@ void GridManager::create_grid(TerrainGrid& grid, int size_m_x, int size_m_y, flo
     }
 }
 
-
-
-
-void GridManager::update_map(int rover_x, int rover_y)
-{
-  if (global_grid.empty() || global_grid[0].empty()) 
-  {
-    std::cerr << "Error: Global grid not initialized." << std::endl;
-    return; // grid not initialized
-  }
-
-  // Bounds of the global grid
-  const int height = static_cast<int>(global_grid.size());
-  const int width  = static_cast<int>(global_grid[0].size());
-
-  const int half_local_map = local_grid.size()/2; // in meters
-
-  // Iterate over a square window centered on the rover
-  for (int dy = -half_local_map; dy < half_local_map; ++dy) {
-      for (int dx = -half_local_map; dx < half_local_map; ++dx) {
-          int x = rover_x + dx;
-          int y = rover_y + dy;
-
-
-          // Bounds check
-          if (x < 0 || y < 0 || x >= width || y >= height) {
-              continue;
-          }
-          int ly = dy + half_local_map;  // 0..19
-          int lx = dx + half_local_map;  // 0..19
-
-          // --- Update the global grid with the values stored in the local grid ---
-          global_grid[y][x].roughness = local_grid[ly][lx].roughness;
-          global_grid[y][x].slope = local_grid[ly][lx].slope;
-          global_grid[y][x].height = local_grid[ly][lx].height;
-          // -------------------------------------------------------------------------------  
-
-      }
-  }
-
-};
-
-
 GridCoord GridManager::pose_to_grid_coordinates(double x, double y)
 {
     GridCoord out;
