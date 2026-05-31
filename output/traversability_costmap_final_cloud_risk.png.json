@@ -1,0 +1,24 @@
+{
+  "topic": "/traversability_costmap",
+  "frame_id": "map",
+  "stamp": {
+    "sec": 1632432146,
+    "nanosec": 451672450
+  },
+  "resolution": 0.5,
+  "width": 201,
+  "height": 281,
+  "origin": {
+    "position": {
+      "x": -40.25,
+      "y": -40.25,
+      "z": -2.018889954
+    },
+    "orientation": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "w": 1.0
+    }
+  }
+}
