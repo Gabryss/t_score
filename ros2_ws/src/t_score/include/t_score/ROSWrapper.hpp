@@ -22,6 +22,7 @@
 #include "rapidjson/filereadstream.h"
 #include <deque>
 #include <vector>
+#include <unordered_set>
 
 
 //ROS
@@ -36,6 +37,8 @@
 #include "std_msgs/msg/header.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include <tf2/exceptions.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -79,6 +82,7 @@ class ROSWrapper : public rclcpp::Node
         TScore t_score;
 
         double height_thresh = 0.25;   // 25 cm step = non traversable
+        TerrainAnalysisConfig analysis_config;
 
 
         vector<double> vector_roughness_lidar_raw;
@@ -100,6 +104,31 @@ class ROSWrapper : public rclcpp::Node
         int nb_cells_global;
         int offset_static = 0;
         float update_frequency;
+        std::string map_frame_id = "map";
+        std::string robot_frame_id = "base_footprint";
+        bool debug_logging = false;
+        bool publish_debug_maps = true;
+        bool rebuild_global_map_on_cloud = true;
+        bool compute_on_cloud_update = false;
+        bool publish_on_timer = true;
+        bool one_shot = false;
+        bool allow_identity_pose_fallback = true;
+        bool publish_global_on_update_only = true;
+        bool publish_local_map = true;
+        bool enable_footprint_inflation = false;
+        bool cloud_received = false;
+        bool map_dirty = false;
+        bool has_robot_pose = false;
+        int step_window_radius_cells = 1;
+        int footprint_radius_cells = 1;
+        int max_points_per_cell = 80;
+        int cloud_point_stride = 1;
+        double robot_radius = 0.45;
+        double global_map_growth_margin = 5.0;
+        double global_map_growth_step = 20.0;
+        double global_map_max_size = 300.0;
+        int floating_floor_neighbor_radius = 2;
+        double max_floor_height_jump = 0.80;
 
         
 
@@ -110,6 +139,7 @@ class ROSWrapper : public rclcpp::Node
         // ===========================
         void pc_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
         void publish_t_score_map(const TerrainGrid &grid, bool is_local);
+        void publish_debug_maps_for_grid(const TerrainGrid &grid, bool is_local);
 
         void compute_t_score();
 
@@ -123,6 +153,10 @@ class ROSWrapper : public rclcpp::Node
 
         rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_t_score_local_;
         rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_t_score_global_;
+        rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_slope_global_;
+        rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_roughness_global_;
+        rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_height_global_;
+        rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr pub_confidence_global_;
         rclcpp::TimerBase::SharedPtr timer_tf_;
 
 
@@ -141,6 +175,7 @@ class ROSWrapper : public rclcpp::Node
 
         // Initialize PCL pointcloud
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud;        
+        std::vector<GridCoord> occupied_global_cells;
 
         // General parameters
         rapidjson::Document p;      // Config file reader
@@ -150,4 +185,17 @@ class ROSWrapper : public rclcpp::Node
         // ===========================
         void get_parameters(std::string parameters_path);
         void lookupTransform();
+        bool updateRobotPose();
+        bool transformPointCloudToMap(const sensor_msgs::msg::PointCloud2::SharedPtr msg, pcl::PointCloud<pcl::PointXYZ>& output);
+        pcl::PointXYZ transformPoint(const pcl::PointXYZ& point, const geometry_msgs::msg::TransformStamped& transform) const;
+        void shiftOccupiedCells(int shift_x, int shift_y);
+        void expandGlobalGridForCloud(const pcl::PointCloud<pcl::PointXYZ>& input);
+        void analyze_global_grid();
+        size_t suppress_floating_floor_cells();
+        void compute_step_heights_for_occupied();
+        void update_local_grid_from_global();
+        void apply_footprint_inflation(TerrainGrid& grid);
+        nav_msgs::msg::OccupancyGrid make_occupancy_grid_message(const TerrainGrid& grid, bool is_local) const;
+        nav_msgs::msg::OccupancyGrid make_metric_grid_message(const TerrainGrid& grid, bool is_local, const std::string& metric) const;
+        void updateAndPublish();
 };

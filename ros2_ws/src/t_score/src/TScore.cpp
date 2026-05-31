@@ -12,11 +12,260 @@
 
 #include "TScore.hpp"
 
+namespace
+{
+double percentile(std::vector<double> values, double q)
+{
+    if (values.empty())
+        return 0.0;
+
+    std::sort(values.begin(), values.end());
+    const double pos = std::clamp(q, 0.0, 1.0) * static_cast<double>(values.size() - 1);
+    const auto lo = static_cast<size_t>(std::floor(pos));
+    const auto hi = static_cast<size_t>(std::ceil(pos));
+    if (lo == hi)
+        return values[lo];
+    const double t = pos - static_cast<double>(lo);
+    return values[lo] * (1.0 - t) + values[hi] * t;
+}
+}
+
+CellLayerClassification TScore::ClassifyCellLayers(const std::vector<pcl::PointXYZ>& data,
+                                                   const TerrainAnalysisConfig& config) const
+{
+    CellLayerClassification out;
+    if (data.empty())
+        return out;
+
+    std::vector<double> z_values;
+    z_values.reserve(data.size());
+    for (const auto& point : data)
+        z_values.push_back(point.z);
+
+    out.z_min = *std::min_element(z_values.begin(), z_values.end());
+    out.z_max = *std::max_element(z_values.begin(), z_values.end());
+    out.z_p05 = percentile(z_values, 0.05);
+    out.z_p50 = percentile(z_values, 0.50);
+    out.z_p95 = percentile(z_values, 0.95);
+    out.ground_z = percentile(z_values, config.ground_quantile);
+
+    const double floor_min_z = out.ground_z - std::max(0.0, config.ground_band_below);
+    const double floor_max_z = out.ground_z + std::max(0.0, config.ground_band_above);
+    const double obstacle_min_z = out.ground_z + std::max(0.0, config.obstacle_min_height);
+    const double clearance_z = out.ground_z + std::max(config.obstacle_min_height, config.ceiling_ignore_height);
+
+    out.floor_points.reserve(data.size());
+    for (const auto& point : data)
+    {
+        if (point.z >= floor_min_z && point.z <= floor_max_z)
+            out.floor_points.push_back(point);
+        if (point.z >= obstacle_min_z && point.z <= clearance_z)
+            ++out.obstacle_points;
+        if (point.z > clearance_z)
+            ++out.ceiling_points;
+    }
+
+    const bool has_floor = static_cast<int>(out.floor_points.size()) >= config.min_floor_points;
+    const bool has_obstacle = out.obstacle_points >= config.obstacle_min_points;
+    const bool has_ceiling = out.ceiling_points >= config.ceiling_min_points;
+    const bool vertical_wall_candidate =
+        (out.z_p95 - out.z_p05) >= config.wall_min_vertical_span &&
+        static_cast<int>(data.size()) >= config.wall_min_points;
+
+    if (has_floor)
+    {
+        out.layer_class = has_obstacle ? CellLayerClass::FloorWithObstacle : CellLayerClass::Floor;
+        return out;
+    }
+
+    if (vertical_wall_candidate)
+    {
+        out.layer_class = CellLayerClass::WallOrVerticalSurface;
+        return out;
+    }
+
+    if (has_ceiling)
+    {
+        out.layer_class = CellLayerClass::CeilingOnly;
+        return out;
+    }
+
+    if (!config.require_floor_for_obstacle && has_obstacle)
+    {
+        out.layer_class = CellLayerClass::FloorWithObstacle;
+        return out;
+    }
+
+    out.layer_class = CellLayerClass::Unknown;
+    return out;
+}
+
+TerrainAnalysis TScore::AnalyzeCell(const std::vector<pcl::PointXYZ>& data, const TerrainAnalysisConfig& config) const
+{
+    TerrainAnalysis out;
+    out.raw_num_points = static_cast<int>(data.size());
+    out.num_points = out.raw_num_points;
+
+    if (out.raw_num_points < config.min_points)
+        return out;
+
+    CellLayerClassification classification;
+    const std::vector<pcl::PointXYZ>* analysis_points = &data;
+
+    if (config.enable_ground_layer_filter || config.enable_column_classifier)
+    {
+        classification = ClassifyCellLayers(data, config);
+        out.layer_class = classification.layer_class;
+        out.ground_z = classification.ground_z;
+        out.floor_points = static_cast<int>(classification.floor_points.size());
+        out.obstacle_points = classification.obstacle_points;
+        out.ceiling_points = classification.ceiling_points;
+        out.z_min = classification.z_min;
+        out.z_max = classification.z_max;
+        out.z_p05 = classification.z_p05;
+        out.z_p50 = classification.z_p50;
+        out.z_p95 = classification.z_p95;
+
+        if (classification.layer_class == CellLayerClass::Unknown ||
+            classification.layer_class == CellLayerClass::CeilingOnly)
+        {
+            return out;
+        }
+
+        if (classification.layer_class == CellLayerClass::WallOrVerticalSurface)
+        {
+            if (!config.wall_cells_as_obstacles)
+                return out;
+
+            out.known = true;
+            out.obstacle = true;
+            out.traversable = false;
+            out.num_points = out.raw_num_points;
+            out.confidence = 1.0;
+            out.mean_z = out.ground_z;
+            out.height = std::max(0.0, out.z_p95 - out.z_p05);
+            out.cost = 100.0;
+            return out;
+        }
+
+        if (classification.layer_class == CellLayerClass::FloorWithObstacle)
+        {
+            out.known = true;
+            out.obstacle = true;
+            out.traversable = false;
+            out.num_points = static_cast<int>(std::max(classification.floor_points.size(),
+                                                       static_cast<size_t>(out.obstacle_points)));
+            out.confidence = 1.0;
+            out.mean_z = out.ground_z;
+            out.height = std::max(0.0, std::min(out.z_max - out.ground_z, config.ceiling_ignore_height));
+            out.cost = 100.0;
+            return out;
+        }
+
+        if (static_cast<int>(classification.floor_points.size()) < config.min_points)
+            return out;
+
+        analysis_points = &classification.floor_points;
+        out.num_points = static_cast<int>(classification.floor_points.size());
+    }
+
+    out.known = true;
+    out.confidence = std::clamp(
+        static_cast<double>(out.num_points - config.min_points) /
+        static_cast<double>(std::max(1, config.confidence_full_points - config.min_points)),
+        0.0,
+        1.0);
+
+    std::vector<double> z_values;
+    z_values.reserve(analysis_points->size());
+    Eigen::Vector3d mean = Eigen::Vector3d::Zero();
+    for (const auto& point : *analysis_points)
+    {
+        mean += Eigen::Vector3d(point.x, point.y, point.z);
+        z_values.push_back(point.z);
+    }
+    mean /= static_cast<double>(analysis_points->size());
+
+    out.mean_z = mean.z();
+    out.z_min = *std::min_element(z_values.begin(), z_values.end());
+    out.z_max = *std::max_element(z_values.begin(), z_values.end());
+    out.z_p05 = percentile(z_values, 0.05);
+    out.z_p50 = percentile(z_values, 0.50);
+    out.z_p95 = percentile(z_values, 0.95);
+    out.height = std::max(0.0, out.z_p95 - out.z_p05);
+
+    Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
+    for (const auto& point : *analysis_points)
+    {
+        Eigen::Vector3d centered(point.x - mean.x(), point.y - mean.y(), point.z - mean.z());
+        covariance += centered * centered.transpose();
+    }
+    covariance /= static_cast<double>(analysis_points->size());
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
+    if (solver.info() != Eigen::Success)
+    {
+        out.cost = -1.0;
+        return out;
+    }
+
+    Eigen::Vector3d normal = solver.eigenvectors().col(0).normalized();
+    if (normal.z() < 0.0)
+        normal = -normal;
+
+    out.slope = std::acos(std::clamp(std::abs(normal.z()), 0.0, 1.0));
+
+    double residual_sum = 0.0;
+    double residual_sq_sum = 0.0;
+    for (const auto& point : *analysis_points)
+    {
+        Eigen::Vector3d p(point.x, point.y, point.z);
+        const double residual = std::abs(normal.dot(p - mean));
+        residual_sum += residual;
+        residual_sq_sum += residual * residual;
+    }
+    const double residual_mean = residual_sum / static_cast<double>(analysis_points->size());
+    const double residual_var = std::max(0.0, residual_sq_sum / static_cast<double>(analysis_points->size()) - residual_mean * residual_mean);
+    out.roughness = std::sqrt(residual_var);
+
+    out.traversable =
+        out.slope <= config.max_traversable_slope &&
+        out.roughness <= config.max_traversable_roughness &&
+        out.height <= config.max_traversable_height;
+
+    out.cost = calculateTScore(out.slope, out.roughness, out.height, out.confidence, out.traversable, config);
+    return out;
+}
+
+double TScore::calculateTScore(double slope,
+                               double roughness,
+                               double height,
+                               double confidence,
+                               bool traversable,
+                               const TerrainAnalysisConfig& config) const
+{
+    if (!traversable)
+        return 100.0;
+
+    const double S = std::clamp(slope / config.slope_critical, 0.0, 1.0);
+    const double R = std::clamp(roughness / config.roughness_critical, 0.0, 1.0);
+    const double H = std::clamp(height / config.height_critical, 0.0, 1.0);
+    const double C = 1.0 - std::clamp(confidence, 0.0, 1.0);
+
+    const double risk =
+        (config.slope_weight * S) +
+        (config.roughness_weight * R) +
+        (config.height_weight * H) +
+        (config.confidence_weight * C);
+
+    return std::clamp(risk * 100.0, 0.0, 100.0);
+}
+
 
 // =====================================================
 // Process Ransac on a pointcloud cell
 // =====================================================
-void TScore::FitPlane(int t, std::vector<pcl::PointXYZ>& data, std::vector<double>& bestFit)
+void TScore::FitPlane(double t, std::vector<pcl::PointXYZ>& data, std::vector<double>& bestFit)
 {
     bestFit.clear();
     distances.clear();
@@ -151,9 +400,6 @@ double TScore::CalculateSlope(const std::vector<double>& plane_eq)
     double A = plane_eq[0];
     double B = plane_eq[1];
     double C = plane_eq[2];
-    std::cerr << "Normal: " << A << " " << B << " " << C << "\n";
-
-
     // Normalize the normal vector (A,B,C)
     double norm = std::sqrt(A*A + B*B + C*C);
     if (norm < 1e-9) {
@@ -202,8 +448,8 @@ double TScore::calculateTScore(double slope, double roughness, double height, bo
     double H = std::clamp(height    / h_crit, 0.0, 1.0);
 
     // Combined scalar traversability
-    double Risk = (w_s * S) + (w_r * R) + (w_h * H);
-    double t_score = std::clamp(S, 0.0, 1.0);
+    double risk = (w_s * S) + (w_r * R) + (w_h * H);
+    double t_score = std::clamp(risk, 0.0, 1.0);
 
     // double t_score = 1.0 - Risk;
 
