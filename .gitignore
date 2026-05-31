@@ -3,6 +3,8 @@
 
 # VsCode
 .vscode/
+.vscode/*
+.vscode
 
 # Compiled Object files
 *.slo
