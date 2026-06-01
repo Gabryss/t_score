@@ -59,6 +59,7 @@ install(TARGETS
 
 install(PROGRAMS
   scripts/costmap_to_image.py
+  scripts/publish_costmap_from_file.py
   scripts/publish_final_cloud_from_bag.py
   DESTINATION lib/${PROJECT_NAME}
 )
