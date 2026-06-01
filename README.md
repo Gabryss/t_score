@@ -22,6 +22,7 @@ The helper image exporter can also save:
 
 - `output/traversability_costmap_final_cloud_risk.png`
 - `output/traversability_costmap_final_cloud_risk.png.json`
+- `output/traversability_costmap_final_cloud_risk.npz`
 
 In the risk PNG:
 
@@ -29,6 +30,8 @@ In the risk PNG:
 - red: dangerous / high risk
 - gray: unknown
 - black: lethal / untraversable
+
+The `.npz` file is the reusable artifact. It stores the exact `OccupancyGrid` cell values plus metadata, so it can be republished later without the original point cloud.
 
 ## Build
 
@@ -75,6 +78,39 @@ ros2 run t_score costmap_to_image.py \
 ```
 
 The output paths, palette, topic, timeout, and save policy are configured in `params.json`.
+
+This also writes a raw reusable costmap snapshot:
+
+```text
+output/traversability_costmap_final_cloud_risk.npz
+```
+
+Keep this file if the original detailed cloud map will no longer be available.
+
+## Republish A Saved Costmap
+
+After a `.npz` snapshot has been saved, the costmap can be republished later as a normal ROS `OccupancyGrid` topic:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ros2_ws/install/setup.bash
+
+ros2 run t_score publish_costmap_from_file.py \
+  /home/gabriel/docker/t_score/output/traversability_costmap_final_cloud_risk.npz \
+  --topic /traversability_costmap \
+  --rate 1.0
+```
+
+For a one-shot latched publication:
+
+```bash
+ros2 run t_score publish_costmap_from_file.py \
+  /home/gabriel/docker/t_score/output/traversability_costmap_final_cloud_risk.npz \
+  --topic /traversability_costmap \
+  --once
+```
+
+The publisher uses reliable transient-local QoS so late subscribers can still receive the saved map.
 
 ## Run On The Final Cloud From The Bag
 
@@ -207,13 +243,21 @@ For Raspberry Pi deployment, increase `cloud_point_stride`, lower `max_points_pe
 
 ### `costmap_to_image.py`
 
-Saves a `nav_msgs/msg/OccupancyGrid` as an image plus metadata JSON.
+Saves a `nav_msgs/msg/OccupancyGrid` as an image, metadata JSON, and raw `.npz` snapshot.
 
 ```bash
 ros2 run t_score costmap_to_image.py --help
 ```
 
 It reads defaults from `params.json`, but command-line flags can override them.
+
+### `publish_costmap_from_file.py`
+
+Republishes a saved raw `.npz` costmap snapshot as `nav_msgs/msg/OccupancyGrid`.
+
+```bash
+ros2 run t_score publish_costmap_from_file.py output/traversability_costmap_final_cloud_risk.npz
+```
 
 ### `publish_final_cloud_from_bag.py`
 
