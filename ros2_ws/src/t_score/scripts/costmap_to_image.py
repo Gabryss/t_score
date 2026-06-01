@@ -156,6 +156,26 @@ def config_value(args, config, arg_name, config_name, fallback):
     return config.get(config_name, fallback)
 
 
+def normalize_namespace(namespace):
+    if not namespace or namespace == "/":
+        return ""
+    namespace = namespace.strip()
+    if not namespace.startswith("/"):
+        namespace = "/" + namespace
+    return namespace.rstrip("/")
+
+
+def resolve_topic_name(topic, namespace):
+    namespace = normalize_namespace(namespace)
+    if not topic or not namespace:
+        return topic
+    if topic.startswith(namespace + "/"):
+        return topic
+    if topic.startswith("/"):
+        return namespace + topic
+    return namespace + "/" + topic
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Save one nav_msgs/OccupancyGrid message as an image."
@@ -169,6 +189,11 @@ def parse_args():
         "--topic",
         default=None,
         help="OccupancyGrid topic to snapshot.",
+    )
+    parser.add_argument(
+        "--namespace",
+        default=None,
+        help="Optional robot namespace to prefix the topic, e.g. rover_1 or /rover_1.",
     )
     parser.add_argument(
         "--output",
@@ -240,6 +265,8 @@ def parse_args():
     args.topic = config_value(
         args, config, "topic", "costmap_image_topic", config.get("traversability_topic_global", "/traversability_costmap")
     )
+    args.namespace = config_value(args, config, "namespace", "ros_namespace", "")
+    args.topic = resolve_topic_name(args.topic, args.namespace)
     args.output = config_value(
         args, config, "output", "costmap_image_output_path", "/tmp/traversability_costmap.png"
     )

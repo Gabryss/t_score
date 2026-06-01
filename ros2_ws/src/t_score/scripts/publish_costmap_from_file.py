@@ -19,7 +19,27 @@ def load_costmap(path):
     return data, metadata
 
 
-def make_message(data, metadata, topic_override=None):
+def normalize_namespace(namespace):
+    if not namespace or namespace == "/":
+        return ""
+    namespace = namespace.strip()
+    if not namespace.startswith("/"):
+        namespace = "/" + namespace
+    return namespace.rstrip("/")
+
+
+def resolve_topic_name(topic, namespace):
+    namespace = normalize_namespace(namespace)
+    if not topic or not namespace:
+        return topic
+    if topic.startswith(namespace + "/"):
+        return topic
+    if topic.startswith("/"):
+        return namespace + topic
+    return namespace + "/" + topic
+
+
+def make_message(data, metadata, topic_override=None, namespace=""):
     msg = OccupancyGrid()
     msg.header.frame_id = metadata["frame_id"]
     msg.header.stamp.sec = int(metadata["stamp"]["sec"])
@@ -42,7 +62,7 @@ def make_message(data, metadata, topic_override=None):
         raise RuntimeError(f"Raw costmap shape {data.shape} does not match metadata {expected_shape}")
 
     msg.data = np.clip(data.reshape(-1), -1, 100).astype(np.int8).tolist()
-    topic = topic_override or metadata.get("topic", "/traversability_costmap")
+    topic = resolve_topic_name(topic_override or metadata.get("topic", "/traversability_costmap"), namespace)
     return msg, topic
 
 
@@ -58,6 +78,11 @@ def parse_args():
         "--topic",
         default=None,
         help="Override output topic. Defaults to the topic stored in the snapshot.",
+    )
+    parser.add_argument(
+        "--namespace",
+        default="",
+        help="Optional robot namespace to prefix the output topic, e.g. rover_1 or /rover_1.",
     )
     parser.add_argument(
         "--rate",
@@ -84,7 +109,7 @@ def main():
 
     rclpy.init()
     node = rclpy.create_node("publish_costmap_from_file")
-    msg, topic = make_message(data, metadata, args.topic)
+    msg, topic = make_message(data, metadata, args.topic, args.namespace)
 
     qos = QoSProfile(depth=1)
     qos.reliability = ReliabilityPolicy.RELIABLE

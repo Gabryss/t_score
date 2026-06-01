@@ -14,6 +14,26 @@ from sensor_msgs.msg import PointCloud2
 from tf2_msgs.msg import TFMessage
 
 
+def normalize_namespace(namespace):
+    if not namespace or namespace == "/":
+        return ""
+    namespace = namespace.strip()
+    if not namespace.startswith("/"):
+        namespace = "/" + namespace
+    return namespace.rstrip("/")
+
+
+def resolve_topic_name(topic, namespace):
+    namespace = normalize_namespace(namespace)
+    if not topic or not namespace:
+        return topic
+    if topic.startswith(namespace + "/"):
+        return topic
+    if topic.startswith("/"):
+        return namespace + topic
+    return namespace + "/" + topic
+
+
 def bag_time_window(bag_uri):
     metadata_path = Path(bag_uri) / "metadata.yaml"
     metadata = yaml.safe_load(metadata_path.read_text())
@@ -59,6 +79,12 @@ def parse_args():
     )
     parser.add_argument("bag", help="Rosbag directory.")
     parser.add_argument("--cloud-topic", default="/rtabmap/cloud_map")
+    parser.add_argument(
+        "--publish-cloud-topic",
+        default=None,
+        help="Output cloud topic. Defaults to --cloud-topic after namespace prefixing.",
+    )
+    parser.add_argument("--namespace", default="", help="Optional robot namespace for published topics.")
     parser.add_argument("--map-frame", default="map")
     parser.add_argument("--robot-frame", default="base_link")
     parser.add_argument("--seek-back-sec", type=float, default=600.0)
@@ -70,6 +96,9 @@ def parse_args():
 def main():
     args = parse_args()
     final_time, final_cloud = read_final_cloud_time(args.bag, args.cloud_topic, args.seek_back_sec)
+    publish_cloud_topic = resolve_topic_name(args.publish_cloud_topic or args.cloud_topic, args.namespace)
+    tf_topic = resolve_topic_name("/tf", args.namespace)
+    tf_static_topic = resolve_topic_name("/tf_static", args.namespace)
     tf_msg = make_identity_robot_tf(args.map_frame, args.robot_frame)
     tf_static_msg = make_identity_robot_tf(args.map_frame, args.robot_frame)
 
@@ -85,12 +114,12 @@ def main():
     tf_static_qos.reliability = ReliabilityPolicy.RELIABLE
     tf_static_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
 
-    cloud_pub = node.create_publisher(PointCloud2, args.cloud_topic, cloud_qos)
-    tf_pub = node.create_publisher(TFMessage, "/tf", tf_qos)
-    tf_static_pub = node.create_publisher(TFMessage, "/tf_static", tf_static_qos)
+    cloud_pub = node.create_publisher(PointCloud2, publish_cloud_topic, cloud_qos)
+    tf_pub = node.create_publisher(TFMessage, tf_topic, tf_qos)
+    tf_static_pub = node.create_publisher(TFMessage, tf_static_topic, tf_static_qos)
 
     node.get_logger().info(
-        f"Publishing final {args.cloud_topic} at bag timestamp {final_time} "
+        f"Publishing final {args.cloud_topic} as {publish_cloud_topic} at bag timestamp {final_time} "
         f"with {len(final_cloud.data)} serialized cloud bytes, "
         f"{len(tf_msg.transforms)} dynamic TF transforms"
     )

@@ -32,6 +32,28 @@ std::string getString(const rapidjson::Document& doc, const char* key, const std
     return doc.HasMember(key) && doc[key].IsString() ? doc[key].GetString() : fallback;
 }
 
+std::string normalizeNamespace(std::string ns)
+{
+    if (ns.empty() || ns == "/")
+        return "";
+    if (ns.front() != '/')
+        ns.insert(ns.begin(), '/');
+    while (ns.size() > 1 && ns.back() == '/')
+        ns.pop_back();
+    return ns;
+}
+
+std::string resolveTopicName(const std::string& topic, const std::string& ns)
+{
+    if (topic.empty() || ns.empty())
+        return topic;
+    if (topic.rfind(ns + "/", 0) == 0)
+        return topic;
+    if (topic.front() == '/')
+        return ns + topic;
+    return ns + "/" + topic;
+}
+
 int scaleToOccupancy(double value, double critical)
 {
     if (critical <= 0.0)
@@ -76,6 +98,7 @@ ROSWrapper::ROSWrapper(): Node("t_score_node", rclcpp::NodeOptions().use_intra_p
     int update_period_ms = static_cast<int>(1000.0 / std::max(0.1f, update_frequency));
     map_frame_id = getString(p, "traversability_frame_id", "map");
     robot_frame_id = getString(p, "robot_frame_id", "base_footprint");
+    const std::string ros_namespace = normalizeNamespace(getString(p, "ros_namespace", ""));
     debug_logging = getBool(p, "debug_logging", false);
     publish_debug_maps = getBool(p, "publish_debug_maps", true);
     rebuild_global_map_on_cloud = getBool(p, "rebuild_global_map_on_cloud", true);
@@ -170,21 +193,27 @@ ROSWrapper::ROSWrapper(): Node("t_score_node", rclcpp::NodeOptions().use_intra_p
         pc_qos.durability_volatile();
 
     sub_pc_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-     getString(p, "pc_topic", "/rtabmap/cloud_map"), pc_qos, std::bind(&ROSWrapper::pc_callback, this, _1));
+     resolveTopicName(getString(p, "pc_topic", "/rtabmap/cloud_map"), ros_namespace),
+     pc_qos,
+     std::bind(&ROSWrapper::pc_callback, this, _1));
     
 
     // Create publishers
     pub_t_score_local_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-        getString(p, "traversability_topic_local", "/traversability_costmap_local"), 10);
+        resolveTopicName(getString(p, "traversability_topic_local", "/traversability_costmap_local"), ros_namespace), 10);
     pub_t_score_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-        getString(p, "traversability_topic_global", "/traversability_costmap"), 10);
+        resolveTopicName(getString(p, "traversability_topic_global", "/traversability_costmap"), ros_namespace), 10);
 
     if (publish_debug_maps)
     {
-        pub_slope_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/t_score/slope_map", 10);
-        pub_roughness_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/t_score/roughness_map", 10);
-        pub_height_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/t_score/height_map", 10);
-        pub_confidence_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/t_score/confidence_map", 10);
+        pub_slope_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+            resolveTopicName("/t_score/slope_map", ros_namespace), 10);
+        pub_roughness_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+            resolveTopicName("/t_score/roughness_map", ros_namespace), 10);
+        pub_height_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+            resolveTopicName("/t_score/height_map", ros_namespace), 10);
+        pub_confidence_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+            resolveTopicName("/t_score/confidence_map", ros_namespace), 10);
     }
 
     RCLCPP_INFO(this->get_logger(), "Now: %.3f (sim time = %s)", 

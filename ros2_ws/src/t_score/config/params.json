@@ -1,6 +1,8 @@
 {
+    "ros_namespace": "",
     "pc_topic": "/rtabmap/cloud_map",
     "tf_topic":"/tf",
+    "tf_static_topic":"/tf_static",
     "height":1,
 
     "map_resolution":0.5,
