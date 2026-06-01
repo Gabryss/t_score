@@ -92,10 +92,19 @@ class CostmapImageSaver:
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
+        raw_output_path = Path(self.args.raw_output)
+        raw_output_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            raw_output_path,
+            data=data.astype(np.int16),
+            metadata=json.dumps(metadata),
+        )
+
         self.node.get_logger().info(
             f"Saved {msg.info.width}x{msg.info.height} costmap to {output_path}"
         )
         self.node.get_logger().info(f"Saved metadata to {metadata_path}")
+        self.node.get_logger().info(f"Saved raw reusable costmap to {raw_output_path}")
         self.received = True
 
     def make_gray_image(self, data):
@@ -172,6 +181,11 @@ def parse_args():
         help="Output metadata JSON path.",
     )
     parser.add_argument(
+        "--raw-output",
+        default=None,
+        help="Output compressed raw costmap path (.npz) for later republishing.",
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=None,
@@ -235,6 +249,13 @@ def parse_args():
         "metadata_output",
         "costmap_metadata_output_path",
         str(Path(args.output).with_suffix(Path(args.output).suffix + ".json")),
+    )
+    args.raw_output = config_value(
+        args,
+        config,
+        "raw_output",
+        "costmap_raw_output_path",
+        str(Path(args.output).with_suffix(".npz")),
     )
     args.timeout = float(config_value(args, config, "timeout", "costmap_image_timeout", 30.0))
     args.unknown_gray = int(config_value(args, config, "unknown_gray", "costmap_image_unknown_gray", 127))
