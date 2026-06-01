@@ -66,6 +66,59 @@ By default, the node subscribes to:
 
 and uses `map` as the traversability frame and `base_link` as the robot frame.
 
+## Namespaces
+
+For multi-robot runs, set `ros_namespace` in `params.json`:
+
+```json
+"ros_namespace": "rover_1"
+```
+
+With this set, configured topics are prefixed:
+
+```text
+/rtabmap/cloud_map              -> /rover_1/rtabmap/cloud_map
+/traversability_costmap         -> /rover_1/traversability_costmap
+/traversability_costmap_local   -> /rover_1/traversability_costmap_local
+/tf                             -> /rover_1/tf
+/tf_static                      -> /rover_1/tf_static
+```
+
+Leave `ros_namespace` empty for the current single-robot behavior:
+
+```json
+"ros_namespace": ""
+```
+
+The helper scripts also accept `--namespace`:
+
+```bash
+ros2 run t_score publish_costmap_from_file.py \
+  output/traversability_costmap_final_cloud_risk.npz \
+  --namespace rover_1
+```
+
+TF has two separate collision concerns:
+
+- TF topics: `/tf` and `/tf_static` can be namespaced or remapped per robot.
+- TF frame IDs: frame names inside the TF messages must also be unique when robots share the same TF tree.
+
+For a shared map with multiple rovers, a common pattern is:
+
+```json
+"traversability_frame_id": "map",
+"robot_frame_id": "rover_1/base_link"
+```
+
+and each robot publishes frames such as:
+
+```text
+map -> rover_1/odom -> rover_1/base_link
+map -> rover_2/odom -> rover_2/base_link
+```
+
+The launch file remaps `/tf` and `/tf_static` using `ros_namespace`, `tf_topic`, and `tf_static_topic`. Namespacing the topic alone does not rewrite frame IDs inside TF messages.
+
 ## Export A Costmap Image
 
 In another terminal:
@@ -111,6 +164,15 @@ ros2 run t_score publish_costmap_from_file.py \
 ```
 
 The publisher uses reliable transient-local QoS so late subscribers can still receive the saved map.
+
+For a namespaced robot:
+
+```bash
+ros2 run t_score publish_costmap_from_file.py \
+  /home/gabriel/docker/t_score/output/traversability_costmap_final_cloud_risk.npz \
+  --namespace rover_1 \
+  --rate 1.0
+```
 
 ## Run On The Final Cloud From The Bag
 
@@ -266,6 +328,7 @@ Reads the final cloud from a bag and republishes it with identity TF. This can b
 ```bash
 ros2 run t_score publish_final_cloud_from_bag.py BAG_DIR \
   --cloud-topic /rtabmap/cloud_map \
+  --namespace rover_1 \
   --seek-back-sec 4000 \
   --publish-seconds 8 \
   --rate 5
