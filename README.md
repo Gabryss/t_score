@@ -52,6 +52,16 @@ source ros2_ws/install/setup.bash
 ros2 launch t_score t_score_launch.py
 ```
 
+Launch arguments are available for common multi-robot overrides:
+
+```bash
+ros2 launch t_score t_score_launch.py \
+  namespace:=rover_1 \
+  robot_frame:=rover_1/base_link \
+  map_frame:=map \
+  profile:=mine_graph
+```
+
 The launch file loads:
 
 ```text
@@ -118,6 +128,14 @@ map -> rover_2/odom -> rover_2/base_link
 ```
 
 The launch file remaps `/tf` and `/tf_static` using `ros_namespace`, `tf_topic`, and `tf_static_topic`. Namespacing the topic alone does not rewrite frame IDs inside TF messages.
+
+The same settings can be overridden from launch:
+
+```bash
+ros2 launch t_score t_score_launch.py \
+  namespace:=rover_2 \
+  robot_frame:=rover_2/base_link
+```
 
 ## Export A Costmap Image
 
@@ -248,6 +266,22 @@ The classifier is intentionally local and conservative. A neighborhood pass supp
 
 ## Important Parameters
 
+The package still loads `params.json`, but the main node now declares the JSON keys as ROS parameters. This means launch files can override the most important values without editing the JSON. Profile values are applied first, then ROS launch/parameter overrides win.
+
+Profile selection:
+
+```json
+"traversability_profile": "mine_graph"
+```
+
+Available presets in `params.json`:
+
+```text
+mine_graph
+navigation_conservative
+small_rover
+```
+
 Map sizing:
 
 ```json
@@ -286,8 +320,14 @@ Column classifier:
 "wall_cells_as_obstacles": false,
 "require_floor_for_obstacle": true,
 "floating_floor_neighbor_radius": 2,
-"max_floor_height_jump": 0.80
+"max_floor_height_jump": 0.80,
+"enable_global_floor_support": true,
+"global_floor_seed_quantile": 0.10,
+"global_floor_seed_height": 0.60,
+"global_floor_max_step": 0.45
 ```
+
+`enable_global_floor_support` grows a supported floor region from low floor seeds through neighboring cells. Floor-like cells that are disconnected from this supported surface are suppressed as unknown; this helps reject roof planes that look locally flat.
 
 Runtime/performance:
 
@@ -340,3 +380,22 @@ ros2 run t_score publish_final_cloud_from_bag.py BAG_DIR \
 - Unknown space is intentionally preserved as unknown, not free.
 - `step_window_radius_cells` is currently `0` because the neighborhood step-height pass was too aggressive on the mine cloud and marked many traversable passages as lethal.
 - Enable `publish_debug_maps` only when tuning; it publishes slope, roughness, height, and confidence grids.
+
+## Tests
+
+The package includes a focused C++ classifier test:
+
+```bash
+cd ros2_ws
+source /opt/ros/jazzy/setup.bash
+colcon test --packages-select t_score --event-handlers console_direct+
+```
+
+The current functional test covers:
+
+- floor-only cells
+- floor plus roof points
+- floor plus obstacle points
+- wall-only cells
+
+The broad style linters are not run by default because this package vendors RapidJSON headers and includes helper scripts that do not follow the default ROS Python quote style.

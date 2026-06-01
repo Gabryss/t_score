@@ -32,6 +32,44 @@ std::string getString(const rapidjson::Document& doc, const char* key, const std
     return doc.HasMember(key) && doc[key].IsString() ? doc[key].GetString() : fallback;
 }
 
+const rapidjson::Value* findProfile(const rapidjson::Document& doc, const std::string& profile_name)
+{
+    if (profile_name.empty() || !doc.HasMember("traversability_profiles") || !doc["traversability_profiles"].IsObject())
+        return nullptr;
+    const auto& profiles = doc["traversability_profiles"];
+    if (!profiles.HasMember(profile_name.c_str()) || !profiles[profile_name.c_str()].IsObject())
+        return nullptr;
+    return &profiles[profile_name.c_str()];
+}
+
+double getProfileDouble(const rapidjson::Document& doc, const rapidjson::Value* profile, const char* key, double fallback)
+{
+    if (profile != nullptr && profile->HasMember(key) && (*profile)[key].IsNumber())
+        return (*profile)[key].GetDouble();
+    return getDouble(doc, key, fallback);
+}
+
+int getProfileInt(const rapidjson::Document& doc, const rapidjson::Value* profile, const char* key, int fallback)
+{
+    if (profile != nullptr && profile->HasMember(key) && (*profile)[key].IsInt())
+        return (*profile)[key].GetInt();
+    return getInt(doc, key, fallback);
+}
+
+bool getProfileBool(const rapidjson::Document& doc, const rapidjson::Value* profile, const char* key, bool fallback)
+{
+    if (profile != nullptr && profile->HasMember(key) && (*profile)[key].IsBool())
+        return (*profile)[key].GetBool();
+    return getBool(doc, key, fallback);
+}
+
+std::string getProfileString(const rapidjson::Document& doc, const rapidjson::Value* profile, const char* key, const std::string& fallback)
+{
+    if (profile != nullptr && profile->HasMember(key) && (*profile)[key].IsString())
+        return (*profile)[key].GetString();
+    return getString(doc, key, fallback);
+}
+
 std::string normalizeNamespace(std::string ns)
 {
     if (ns.empty() || ns == "/")
@@ -71,6 +109,12 @@ struct TraversabilityStats
     int wall = 0;
     int ceiling = 0;
     int floating_suppressed = 0;
+    int unsupported_floor = 0;
+    int multires_filled = 0;
+    int second_multires_filled = 0;
+    int neighbor_gap_filled = 0;
+    int unknown_region_filled = 0;
+    int cost_smoothed = 0;
     int lethal_obstacle = 0;
     int lethal_slope = 0;
     int lethal_roughness = 0;
@@ -90,64 +134,139 @@ ROSWrapper::ROSWrapper(): Node("t_score_node", rclcpp::NodeOptions().use_intra_p
     std::string path_parameters = this->get_parameter("param_path").as_string();
     get_parameters(path_parameters);
 
-    resolution = getDouble(p, "map_resolution", 0.5);
-    local_map_size = getDouble(p, "local_map_size", 5.0);
-    global_map_size = getDouble(p, "global_map_size", 1000.0);
+    this->declare_parameter("traversability_profile", getString(p, "traversability_profile", ""));
+    const std::string profile_name = this->get_parameter("traversability_profile").as_string();
+    const rapidjson::Value* active_profile = findProfile(p, profile_name);
+    if (!profile_name.empty())
+    {
+        if (active_profile != nullptr)
+            RCLCPP_INFO(this->get_logger(), "Using traversability profile '%s'", profile_name.c_str());
+        else
+            RCLCPP_WARN(this->get_logger(), "Traversability profile '%s' not found; using base parameters", profile_name.c_str());
+    }
 
-    update_frequency = getDouble(p, "update_frequency", 1.0);
+    auto cfg_double = [&](const char* key, double fallback) {
+        return getProfileDouble(p, active_profile, key, fallback);
+    };
+    auto cfg_int = [&](const char* key, int fallback) {
+        return getProfileInt(p, active_profile, key, fallback);
+    };
+    auto cfg_bool = [&](const char* key, bool fallback) {
+        return getProfileBool(p, active_profile, key, fallback);
+    };
+    auto cfg_string = [&](const char* key, const std::string& fallback) {
+        return getProfileString(p, active_profile, key, fallback);
+    };
+    auto param_double = [&](const char* key, double fallback) {
+        return this->declare_parameter<double>(key, cfg_double(key, fallback));
+    };
+    auto param_int = [&](const char* key, int fallback) {
+        return static_cast<int>(this->declare_parameter<int>(key, cfg_int(key, fallback)));
+    };
+    auto param_bool = [&](const char* key, bool fallback) {
+        return this->declare_parameter<bool>(key, cfg_bool(key, fallback));
+    };
+    auto param_string = [&](const char* key, const std::string& fallback) {
+        return this->declare_parameter<std::string>(key, cfg_string(key, fallback));
+    };
+
+    resolution = param_double("map_resolution", 0.5);
+    local_map_size = param_double("local_map_size", 5.0);
+    global_map_size = param_double("global_map_size", 1000.0);
+
+    update_frequency = param_double("update_frequency", 1.0);
     int update_period_ms = static_cast<int>(1000.0 / std::max(0.1f, update_frequency));
-    map_frame_id = getString(p, "traversability_frame_id", "map");
-    robot_frame_id = getString(p, "robot_frame_id", "base_footprint");
-    const std::string ros_namespace = normalizeNamespace(getString(p, "ros_namespace", ""));
-    debug_logging = getBool(p, "debug_logging", false);
-    publish_debug_maps = getBool(p, "publish_debug_maps", true);
-    rebuild_global_map_on_cloud = getBool(p, "rebuild_global_map_on_cloud", true);
-    compute_on_cloud_update = getBool(p, "compute_on_cloud_update", false);
-    publish_on_timer = getBool(p, "publish_on_timer", true);
-    one_shot = getBool(p, "one_shot", false);
-    allow_identity_pose_fallback = getBool(p, "allow_identity_pose_fallback", true);
-    publish_global_on_update_only = getBool(p, "publish_global_on_update_only", true);
-    publish_local_map = getBool(p, "publish_local_map", true);
-    enable_footprint_inflation = getBool(p, "enable_footprint_inflation", enable_footprint_inflation);
-    step_window_radius_cells = getInt(p, "step_window_radius_cells", 1);
-    max_points_per_cell = std::max(3, getInt(p, "max_points_per_cell", 80));
-    cloud_point_stride = std::max(1, getInt(p, "cloud_point_stride", 1));
-    robot_radius = getDouble(p, "robot_radius", 0.45);
-    global_map_growth_margin = getDouble(p, "global_map_growth_margin", 5.0);
-    global_map_growth_step = getDouble(p, "global_map_growth_step", 20.0);
-    global_map_max_size = getDouble(p, "global_map_max_size", std::max<double>(global_map_size, 300.0));
-    floating_floor_neighbor_radius = getInt(p, "floating_floor_neighbor_radius", floating_floor_neighbor_radius);
-    max_floor_height_jump = getDouble(p, "max_floor_height_jump", max_floor_height_jump);
+    map_frame_id = param_string("traversability_frame_id", "map");
+    robot_frame_id = param_string("robot_frame_id", "base_footprint");
+    const std::string ros_namespace = normalizeNamespace(param_string("ros_namespace", ""));
+    debug_logging = param_bool("debug_logging", false);
+    publish_debug_maps = param_bool("publish_debug_maps", true);
+    rebuild_global_map_on_cloud = param_bool("rebuild_global_map_on_cloud", true);
+    compute_on_cloud_update = param_bool("compute_on_cloud_update", false);
+    publish_on_timer = param_bool("publish_on_timer", true);
+    one_shot = param_bool("one_shot", false);
+    allow_identity_pose_fallback = param_bool("allow_identity_pose_fallback", true);
+    publish_global_on_update_only = param_bool("publish_global_on_update_only", true);
+    publish_local_map = param_bool("publish_local_map", true);
+    enable_footprint_inflation = param_bool("enable_footprint_inflation", enable_footprint_inflation);
+    step_window_radius_cells = param_int("step_window_radius_cells", 1);
+    max_points_per_cell = std::max(3, param_int("max_points_per_cell", 80));
+    cloud_point_stride = std::max(1, param_int("cloud_point_stride", 1));
+    robot_radius = param_double("robot_radius", 0.45);
+    global_map_growth_margin = param_double("global_map_growth_margin", 5.0);
+    global_map_growth_step = param_double("global_map_growth_step", 20.0);
+    global_map_max_size = param_double("global_map_max_size", std::max<double>(global_map_size, 300.0));
+    floating_floor_neighbor_radius = param_int("floating_floor_neighbor_radius", floating_floor_neighbor_radius);
+    max_floor_height_jump = param_double("max_floor_height_jump", max_floor_height_jump);
+    enable_global_floor_support = param_bool("enable_global_floor_support", enable_global_floor_support);
+    global_floor_seed_quantile = param_double("global_floor_seed_quantile", global_floor_seed_quantile);
+    global_floor_seed_height = param_double("global_floor_seed_height", global_floor_seed_height);
+    global_floor_max_step = param_double("global_floor_max_step", global_floor_max_step);
+    enable_multires_unknown_fill = param_bool("enable_multires_unknown_fill", enable_multires_unknown_fill);
+    multires_fill_resolution = param_double("multires_fill_resolution", multires_fill_resolution);
+    multires_fill_min_known = param_int("multires_fill_min_known", multires_fill_min_known);
+    enable_second_multires_unknown_fill = param_bool("enable_second_multires_unknown_fill", enable_second_multires_unknown_fill);
+    second_multires_fill_resolution = param_double("second_multires_fill_resolution", second_multires_fill_resolution);
+    second_multires_fill_min_known = param_int("second_multires_fill_min_known", second_multires_fill_min_known);
+    enable_neighbor_gap_fill = param_bool("enable_neighbor_gap_fill", enable_neighbor_gap_fill);
+    neighbor_gap_fill_min_neighbors = param_int("neighbor_gap_fill_min_neighbors", neighbor_gap_fill_min_neighbors);
+    neighbor_gap_fill_cost_penalty = param_double("neighbor_gap_fill_cost_penalty", neighbor_gap_fill_cost_penalty);
+    neighbor_gap_fill_skip_if_blocked_neighbor = param_bool(
+        "neighbor_gap_fill_skip_if_blocked_neighbor",
+        neighbor_gap_fill_skip_if_blocked_neighbor);
+    enable_unknown_region_fill = param_bool("enable_unknown_region_fill", enable_unknown_region_fill);
+    unknown_region_fill_max_cells = param_int("unknown_region_fill_max_cells", unknown_region_fill_max_cells);
+    unknown_region_fill_min_boundary_known = param_int(
+        "unknown_region_fill_min_boundary_known",
+        unknown_region_fill_min_boundary_known);
+    unknown_region_fill_max_wall_fraction = param_double(
+        "unknown_region_fill_max_wall_fraction",
+        unknown_region_fill_max_wall_fraction);
+    unknown_region_fill_max_blocked_fraction = param_double(
+        "unknown_region_fill_max_blocked_fraction",
+        unknown_region_fill_max_blocked_fraction);
+    unknown_region_fill_cost_penalty = param_double(
+        "unknown_region_fill_cost_penalty",
+        unknown_region_fill_cost_penalty);
+    enable_cost_smoothing = param_bool("enable_cost_smoothing", enable_cost_smoothing);
+    cost_smoothing_iterations = param_int("cost_smoothing_iterations", cost_smoothing_iterations);
+    cost_smoothing_radius = param_int("cost_smoothing_radius", cost_smoothing_radius);
+    cost_smoothing_neighbor_weight = param_double(
+        "cost_smoothing_neighbor_weight",
+        cost_smoothing_neighbor_weight);
+    cost_smoothing_max_cost_delta = param_double(
+        "cost_smoothing_max_cost_delta",
+        cost_smoothing_max_cost_delta);
     footprint_radius_cells = enable_footprint_inflation
         ? std::max(1, static_cast<int>(std::ceil(robot_radius / resolution)))
         : 0;
 
-    analysis_config.min_points = getInt(p, "min_points_per_cell", analysis_config.min_points);
-    analysis_config.confidence_full_points = getInt(p, "confidence_full_points", analysis_config.confidence_full_points);
-    analysis_config.slope_critical = getDouble(p, "slope_critical", analysis_config.slope_critical);
-    analysis_config.roughness_critical = getDouble(p, "roughness_critical", analysis_config.roughness_critical);
-    analysis_config.height_critical = getDouble(p, "height_critical", analysis_config.height_critical);
-    analysis_config.max_traversable_slope = getDouble(p, "max_traversable_slope", analysis_config.max_traversable_slope);
-    analysis_config.max_traversable_roughness = getDouble(p, "max_traversable_roughness", analysis_config.max_traversable_roughness);
-    analysis_config.max_traversable_height = getDouble(p, "max_traversable_height", analysis_config.max_traversable_height);
-    analysis_config.slope_weight = getDouble(p, "slope_weight", analysis_config.slope_weight);
-    analysis_config.roughness_weight = getDouble(p, "roughness_weight", analysis_config.roughness_weight);
-    analysis_config.height_weight = getDouble(p, "height_weight", analysis_config.height_weight);
-    analysis_config.confidence_weight = getDouble(p, "confidence_weight", analysis_config.confidence_weight);
-    analysis_config.enable_ground_layer_filter = getBool(p, "enable_ground_layer_filter", analysis_config.enable_ground_layer_filter);
-    analysis_config.ground_quantile = getDouble(p, "ground_quantile", analysis_config.ground_quantile);
-    analysis_config.ground_band_below = getDouble(p, "ground_band_below", analysis_config.ground_band_below);
-    analysis_config.ground_band_above = getDouble(p, "ground_band_above", analysis_config.ground_band_above);
-    analysis_config.ceiling_ignore_height = getDouble(p, "ceiling_ignore_height", analysis_config.ceiling_ignore_height);
-    analysis_config.obstacle_min_height = getDouble(p, "obstacle_min_height", analysis_config.obstacle_min_height);
-    analysis_config.obstacle_min_points = getInt(p, "obstacle_min_points", analysis_config.obstacle_min_points);
-    analysis_config.enable_column_classifier = getBool(p, "enable_column_classifier", analysis_config.enable_column_classifier);
-    analysis_config.min_floor_points = getInt(p, "min_floor_points", analysis_config.min_floor_points);
-    analysis_config.ceiling_min_points = getInt(p, "ceiling_min_points", analysis_config.ceiling_min_points);
-    analysis_config.wall_min_vertical_span = getDouble(p, "wall_min_vertical_span", analysis_config.wall_min_vertical_span);
-    analysis_config.wall_min_points = getInt(p, "wall_min_points", analysis_config.wall_min_points);
-    analysis_config.wall_cells_as_obstacles = getBool(p, "wall_cells_as_obstacles", analysis_config.wall_cells_as_obstacles);
-    analysis_config.require_floor_for_obstacle = getBool(p, "require_floor_for_obstacle", analysis_config.require_floor_for_obstacle);
+    analysis_config.min_points = param_int("min_points_per_cell", analysis_config.min_points);
+    analysis_config.confidence_full_points = param_int("confidence_full_points", analysis_config.confidence_full_points);
+    analysis_config.slope_critical = param_double("slope_critical", analysis_config.slope_critical);
+    analysis_config.roughness_critical = param_double("roughness_critical", analysis_config.roughness_critical);
+    analysis_config.height_critical = param_double("height_critical", analysis_config.height_critical);
+    analysis_config.max_traversable_slope = param_double("max_traversable_slope", analysis_config.max_traversable_slope);
+    analysis_config.max_traversable_roughness = param_double("max_traversable_roughness", analysis_config.max_traversable_roughness);
+    analysis_config.max_traversable_height = param_double("max_traversable_height", analysis_config.max_traversable_height);
+    analysis_config.slope_weight = param_double("slope_weight", analysis_config.slope_weight);
+    analysis_config.roughness_weight = param_double("roughness_weight", analysis_config.roughness_weight);
+    analysis_config.height_weight = param_double("height_weight", analysis_config.height_weight);
+    analysis_config.confidence_weight = param_double("confidence_weight", analysis_config.confidence_weight);
+    analysis_config.enable_ground_layer_filter = param_bool("enable_ground_layer_filter", analysis_config.enable_ground_layer_filter);
+    analysis_config.ground_quantile = param_double("ground_quantile", analysis_config.ground_quantile);
+    analysis_config.ground_band_below = param_double("ground_band_below", analysis_config.ground_band_below);
+    analysis_config.ground_band_above = param_double("ground_band_above", analysis_config.ground_band_above);
+    analysis_config.ceiling_ignore_height = param_double("ceiling_ignore_height", analysis_config.ceiling_ignore_height);
+    analysis_config.obstacle_min_height = param_double("obstacle_min_height", analysis_config.obstacle_min_height);
+    analysis_config.obstacle_min_points = param_int("obstacle_min_points", analysis_config.obstacle_min_points);
+    analysis_config.enable_column_classifier = param_bool("enable_column_classifier", analysis_config.enable_column_classifier);
+    analysis_config.min_floor_points = param_int("min_floor_points", analysis_config.min_floor_points);
+    analysis_config.ceiling_min_points = param_int("ceiling_min_points", analysis_config.ceiling_min_points);
+    analysis_config.wall_min_vertical_span = param_double("wall_min_vertical_span", analysis_config.wall_min_vertical_span);
+    analysis_config.wall_min_points = param_int("wall_min_points", analysis_config.wall_min_points);
+    analysis_config.wall_cells_as_obstacles = param_bool("wall_cells_as_obstacles", analysis_config.wall_cells_as_obstacles);
+    analysis_config.require_floor_for_obstacle = param_bool("require_floor_for_obstacle", analysis_config.require_floor_for_obstacle);
 
 
     // Initialize grid
@@ -185,24 +304,24 @@ ROSWrapper::ROSWrapper(): Node("t_score_node", rclcpp::NodeOptions().use_intra_p
     cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
 
     // Subscribe to the point cloud topic    
-    rclcpp::QoS pc_qos(getInt(p, "pc_qos_depth", 1));
+    rclcpp::QoS pc_qos(param_int("pc_qos_depth", 1));
     pc_qos.reliable();
-    if (getBool(p, "pc_qos_transient_local", true))
+    if (param_bool("pc_qos_transient_local", true))
         pc_qos.transient_local();
     else
         pc_qos.durability_volatile();
 
     sub_pc_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-     resolveTopicName(getString(p, "pc_topic", "/rtabmap/cloud_map"), ros_namespace),
+     resolveTopicName(param_string("pc_topic", "/rtabmap/cloud_map"), ros_namespace),
      pc_qos,
      std::bind(&ROSWrapper::pc_callback, this, _1));
     
 
     // Create publishers
     pub_t_score_local_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-        resolveTopicName(getString(p, "traversability_topic_local", "/traversability_costmap_local"), ros_namespace), 10);
+        resolveTopicName(param_string("traversability_topic_local", "/traversability_costmap_local"), ros_namespace), 10);
     pub_t_score_global_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
-        resolveTopicName(getString(p, "traversability_topic_global", "/traversability_costmap"), ros_namespace), 10);
+        resolveTopicName(param_string("traversability_topic_global", "/traversability_costmap"), ros_namespace), 10);
 
     if (publish_debug_maps)
     {
@@ -505,6 +624,7 @@ void ROSWrapper::analyze_global_grid()
     }
 
     stats.floating_suppressed = static_cast<int>(suppress_floating_floor_cells());
+    stats.unsupported_floor = static_cast<int>(apply_global_floor_support());
     compute_step_heights_for_occupied();
 
     for (const auto& coord : occupied_global_cells)
@@ -560,9 +680,26 @@ void ROSWrapper::analyze_global_grid()
         }
     }
 
+    if (enable_multires_unknown_fill)
+    {
+        stats.multires_filled = static_cast<int>(
+            fill_unknown_cells_from_coarse_blocks(multires_fill_resolution, multires_fill_min_known, false));
+
+        if (enable_second_multires_unknown_fill)
+        {
+            stats.second_multires_filled = static_cast<int>(
+                fill_unknown_cells_from_coarse_blocks(
+                    second_multires_fill_resolution,
+                    second_multires_fill_min_known,
+                    true));
+        }
+    }
+    stats.neighbor_gap_filled = static_cast<int>(fill_unknown_cells_from_neighbors());
+    stats.unknown_region_filled = static_cast<int>(fill_small_unknown_regions());
+    stats.cost_smoothed = static_cast<int>(smooth_traversability_costs());
     apply_footprint_inflation(grid_manager.global_grid);
     RCLCPP_INFO(this->get_logger(),
-                "Traversability stats: occupied=%d known=%d unknown=%d floor=%d floor_obstacle=%d wall=%d ceiling=%d floating=%d lethal_obstacle=%d lethal_slope=%d lethal_roughness=%d lethal_height=%d graded=%d",
+                "Traversability stats: occupied=%d known=%d unknown=%d floor=%d floor_obstacle=%d wall=%d ceiling=%d floating=%d unsupported_floor=%d multires_filled=%d second_multires_filled=%d neighbor_gap_filled=%d unknown_region_filled=%d cost_smoothed=%d lethal_obstacle=%d lethal_slope=%d lethal_roughness=%d lethal_height=%d graded=%d",
                 stats.occupied,
                 stats.known,
                 stats.unknown,
@@ -571,6 +708,12 @@ void ROSWrapper::analyze_global_grid()
                 stats.wall,
                 stats.ceiling,
                 stats.floating_suppressed,
+                stats.unsupported_floor,
+                stats.multires_filled,
+                stats.second_multires_filled,
+                stats.neighbor_gap_filled,
+                stats.unknown_region_filled,
+                stats.cost_smoothed,
                 stats.lethal_obstacle,
                 stats.lethal_slope,
                 stats.lethal_roughness,
@@ -635,6 +778,616 @@ size_t ROSWrapper::suppress_floating_floor_cells()
     }
 
     return floating_cells.size();
+}
+
+size_t ROSWrapper::apply_global_floor_support()
+{
+    if (!enable_global_floor_support || global_floor_max_step <= 0.0 ||
+        grid_manager.global_grid.empty() || grid_manager.global_grid[0].empty())
+        return 0;
+
+    std::vector<double> floor_heights;
+    floor_heights.reserve(occupied_global_cells.size());
+    for (const auto& coord : occupied_global_cells)
+    {
+        const TerrainCell& cell = grid_manager.global_grid[coord.y][coord.x];
+        if (cell.known &&
+            !cell.obstacle &&
+            cell.layer_class == static_cast<int>(CellLayerClass::Floor))
+        {
+            floor_heights.push_back(cell.z_p50);
+        }
+    }
+
+    if (floor_heights.empty())
+        return 0;
+
+    std::sort(floor_heights.begin(), floor_heights.end());
+    const double q = std::clamp(global_floor_seed_quantile, 0.0, 1.0);
+    const size_t seed_index = static_cast<size_t>(std::round(q * static_cast<double>(floor_heights.size() - 1)));
+    const double seed_ceiling = floor_heights[seed_index] + std::max(0.0, global_floor_seed_height);
+
+    const int H = static_cast<int>(grid_manager.global_grid.size());
+    const int W = static_cast<int>(grid_manager.global_grid[0].size());
+    std::vector<uint8_t> supported(static_cast<size_t>(W) * static_cast<size_t>(H), 0);
+    std::deque<GridCoord> queue;
+
+    auto index_of = [W](int x, int y) {
+        return static_cast<size_t>(y) * static_cast<size_t>(W) + static_cast<size_t>(x);
+    };
+
+    for (const auto& coord : occupied_global_cells)
+    {
+        const TerrainCell& cell = grid_manager.global_grid[coord.y][coord.x];
+        if (cell.known &&
+            !cell.obstacle &&
+            cell.layer_class == static_cast<int>(CellLayerClass::Floor) &&
+            cell.z_p50 <= seed_ceiling)
+        {
+            supported[index_of(coord.x, coord.y)] = 1;
+            queue.push_back(coord);
+        }
+    }
+
+    while (!queue.empty())
+    {
+        const GridCoord current = queue.front();
+        queue.pop_front();
+        const TerrainCell& current_cell = grid_manager.global_grid[current.y][current.x];
+
+        for (int dy = -1; dy <= 1; ++dy)
+        {
+            const int y = current.y + dy;
+            if (y < 0 || y >= H)
+                continue;
+
+            for (int dx = -1; dx <= 1; ++dx)
+            {
+                const int x = current.x + dx;
+                if (x < 0 || x >= W || (dx == 0 && dy == 0))
+                    continue;
+
+                const size_t idx = index_of(x, y);
+                if (supported[idx])
+                    continue;
+
+                const TerrainCell& nb = grid_manager.global_grid[y][x];
+                if (!nb.known ||
+                    nb.obstacle ||
+                    nb.layer_class != static_cast<int>(CellLayerClass::Floor))
+                    continue;
+
+                if (std::abs(nb.z_p50 - current_cell.z_p50) > global_floor_max_step)
+                    continue;
+
+                supported[idx] = 1;
+                queue.push_back({x, y});
+            }
+        }
+    }
+
+    size_t suppressed_count = 0;
+    for (const auto& coord : occupied_global_cells)
+    {
+        TerrainCell& cell = grid_manager.global_grid[coord.y][coord.x];
+        if (!cell.known ||
+            cell.obstacle ||
+            cell.layer_class != static_cast<int>(CellLayerClass::Floor))
+            continue;
+
+        if (supported[index_of(coord.x, coord.y)])
+            continue;
+
+        cell.known = false;
+        cell.traversable = false;
+        cell.floating_suppressed = true;
+        cell.cost = -1.0;
+        ++suppressed_count;
+    }
+
+    return suppressed_count;
+}
+
+size_t ROSWrapper::fill_unknown_cells_from_coarse_blocks(
+    double fill_resolution,
+    int min_known,
+    bool skip_lethal_blocks)
+{
+    if (fill_resolution <= resolution ||
+        grid_manager.global_grid.empty() ||
+        grid_manager.global_grid[0].empty())
+        return 0;
+
+    const int H = static_cast<int>(grid_manager.global_grid.size());
+    const int W = static_cast<int>(grid_manager.global_grid[0].size());
+    const int block_size = std::max(2, static_cast<int>(std::round(fill_resolution / resolution)));
+    const int required_known = std::max(1, min_known);
+
+    std::unordered_set<int64_t> occupied_ids;
+    occupied_ids.reserve(occupied_global_cells.size() * 2 + 1);
+    for (const auto& coord : occupied_global_cells)
+        occupied_ids.insert(static_cast<int64_t>(coord.y) * static_cast<int64_t>(W) + coord.x);
+
+    size_t filled_count = 0;
+
+    for (int y0 = 0; y0 < H; y0 += block_size)
+    {
+        for (int x0 = 0; x0 < W; x0 += block_size)
+        {
+            int known_count = 0;
+            double cost_sum = 0.0;
+            double confidence_sum = 0.0;
+            double slope_sum = 0.0;
+            double roughness_sum = 0.0;
+            double height_sum = 0.0;
+            double z_sum = 0.0;
+            bool any_lethal = false;
+            bool any_traversable = false;
+
+            const int y_end = std::min(H, y0 + block_size);
+            const int x_end = std::min(W, x0 + block_size);
+
+            for (int y = y0; y < y_end; ++y)
+            {
+                for (int x = x0; x < x_end; ++x)
+                {
+                    const TerrainCell& cell = grid_manager.global_grid[y][x];
+                    if (!cell.known || cell.cost < 0.0)
+                        continue;
+
+                    ++known_count;
+                    cost_sum += std::clamp(cell.cost, 0.0, 100.0);
+                    confidence_sum += cell.confidence;
+                    slope_sum += cell.slope;
+                    roughness_sum += cell.roughness;
+                    height_sum += cell.height;
+                    z_sum += cell.z_p50;
+                    any_lethal = any_lethal || cell.cost >= 100.0;
+                    any_traversable = any_traversable || cell.traversable;
+                }
+            }
+
+            if (known_count < required_known || (skip_lethal_blocks && any_lethal))
+                continue;
+
+            const double inv_count = 1.0 / static_cast<double>(known_count);
+            const double filled_cost = std::round(cost_sum * inv_count);
+            const double filled_confidence = std::clamp(confidence_sum * inv_count, 0.0, 1.0);
+            const double filled_slope = slope_sum * inv_count;
+            const double filled_roughness = roughness_sum * inv_count;
+            const double filled_height = height_sum * inv_count;
+            const double filled_z = z_sum * inv_count;
+
+            for (int y = y0; y < y_end; ++y)
+            {
+                for (int x = x0; x < x_end; ++x)
+                {
+                    TerrainCell& cell = grid_manager.global_grid[y][x];
+                    if (cell.known)
+                        continue;
+
+                    cell.known = true;
+                    cell.traversable = any_traversable && !any_lethal && filled_cost < 100.0;
+                    cell.obstacle = false;
+                    cell.cost = std::clamp(filled_cost, 0.0, 100.0);
+                    cell.confidence = filled_confidence;
+                    cell.slope = filled_slope;
+                    cell.roughness = filled_roughness;
+                    cell.height = filled_height;
+                    cell.mean_z = filled_z;
+                    cell.z_min = filled_z;
+                    cell.z_max = filled_z;
+                    cell.z_p05 = filled_z;
+                    cell.z_p50 = filled_z;
+                    cell.z_p95 = filled_z;
+
+                    const int64_t id = static_cast<int64_t>(y) * static_cast<int64_t>(W) + x;
+                    if (occupied_ids.insert(id).second)
+                        occupied_global_cells.push_back({x, y});
+                    ++filled_count;
+                }
+            }
+        }
+    }
+
+    return filled_count;
+}
+
+size_t ROSWrapper::fill_unknown_cells_from_neighbors()
+{
+    if (!enable_neighbor_gap_fill ||
+        grid_manager.global_grid.empty() ||
+        grid_manager.global_grid[0].empty())
+        return 0;
+
+    const int H = static_cast<int>(grid_manager.global_grid.size());
+    const int W = static_cast<int>(grid_manager.global_grid[0].size());
+    const int min_neighbors = std::clamp(neighbor_gap_fill_min_neighbors, 1, 8);
+    const TerrainGrid source = grid_manager.global_grid;
+
+    std::unordered_set<int64_t> occupied_ids;
+    occupied_ids.reserve(occupied_global_cells.size() * 2 + 1);
+    for (const auto& coord : occupied_global_cells)
+        occupied_ids.insert(static_cast<int64_t>(coord.y) * static_cast<int64_t>(W) + coord.x);
+
+    size_t filled_count = 0;
+
+    for (int y = 1; y < H - 1; ++y)
+    {
+        for (int x = 1; x < W - 1; ++x)
+        {
+            TerrainCell& target = grid_manager.global_grid[y][x];
+            if (target.known)
+                continue;
+
+            int valid_neighbors = 0;
+            bool blocked_neighbor = false;
+            double cost_sum = 0.0;
+            double confidence_sum = 0.0;
+            double slope_sum = 0.0;
+            double roughness_sum = 0.0;
+            double height_sum = 0.0;
+            double z_sum = 0.0;
+            bool any_obstacle = false;
+
+            for (int dy = -1; dy <= 1; ++dy)
+            {
+                for (int dx = -1; dx <= 1; ++dx)
+                {
+                    if (dx == 0 && dy == 0)
+                        continue;
+
+                    const TerrainCell& nb = source[y + dy][x + dx];
+                    const bool is_wall =
+                        nb.layer_class == static_cast<int>(CellLayerClass::WallOrVerticalSurface);
+                    const bool is_blocked =
+                        !nb.known ||
+                        is_wall ||
+                        nb.cost < 0.0;
+
+                    if (is_blocked)
+                    {
+                        blocked_neighbor = true;
+                        continue;
+                    }
+
+                    ++valid_neighbors;
+                    cost_sum += std::clamp(nb.cost, 0.0, 100.0);
+                    confidence_sum += nb.confidence;
+                    slope_sum += nb.slope;
+                    roughness_sum += nb.roughness;
+                    height_sum += nb.height;
+                    z_sum += nb.z_p50;
+                    any_obstacle = any_obstacle || nb.obstacle;
+                }
+            }
+
+            if (valid_neighbors < min_neighbors ||
+                (neighbor_gap_fill_skip_if_blocked_neighbor && blocked_neighbor))
+                continue;
+
+            const double inv_count = 1.0 / static_cast<double>(valid_neighbors);
+            const double filled_cost = std::clamp(
+                std::round(cost_sum * inv_count + neighbor_gap_fill_cost_penalty),
+                0.0,
+                100.0);
+            const double filled_confidence = std::clamp(confidence_sum * inv_count * 0.75, 0.0, 1.0);
+            const double filled_slope = slope_sum * inv_count;
+            const double filled_roughness = roughness_sum * inv_count;
+            const double filled_height = height_sum * inv_count;
+            const double filled_z = z_sum * inv_count;
+
+            target.known = true;
+            target.traversable = filled_cost < 100.0;
+            target.obstacle = any_obstacle || filled_cost >= 100.0;
+            target.cost = filled_cost;
+            target.confidence = filled_confidence;
+            target.slope = filled_slope;
+            target.roughness = filled_roughness;
+            target.height = filled_height;
+            target.mean_z = filled_z;
+            target.z_min = filled_z;
+            target.z_max = filled_z;
+            target.z_p05 = filled_z;
+            target.z_p50 = filled_z;
+            target.z_p95 = filled_z;
+            target.layer_class = static_cast<int>(CellLayerClass::Floor);
+
+            const int64_t id = static_cast<int64_t>(y) * static_cast<int64_t>(W) + x;
+            if (occupied_ids.insert(id).second)
+                occupied_global_cells.push_back({x, y});
+            ++filled_count;
+        }
+    }
+
+    return filled_count;
+}
+
+size_t ROSWrapper::fill_small_unknown_regions()
+{
+    if (!enable_unknown_region_fill ||
+        grid_manager.global_grid.empty() ||
+        grid_manager.global_grid[0].empty())
+        return 0;
+
+    const int H = static_cast<int>(grid_manager.global_grid.size());
+    const int W = static_cast<int>(grid_manager.global_grid[0].size());
+    const int max_region_cells = std::max(1, unknown_region_fill_max_cells);
+    const int min_boundary_known = std::max(1, unknown_region_fill_min_boundary_known);
+    const double max_wall_fraction = std::clamp(unknown_region_fill_max_wall_fraction, 0.0, 1.0);
+    const double max_blocked_fraction = std::clamp(unknown_region_fill_max_blocked_fraction, 0.0, 1.0);
+    const TerrainGrid source = grid_manager.global_grid;
+
+    std::vector<uint8_t> visited(static_cast<size_t>(H) * static_cast<size_t>(W), 0);
+    std::unordered_set<int64_t> occupied_ids;
+    occupied_ids.reserve(occupied_global_cells.size() * 2 + 1);
+    for (const auto& coord : occupied_global_cells)
+        occupied_ids.insert(static_cast<int64_t>(coord.y) * static_cast<int64_t>(W) + coord.x);
+
+    auto index_of = [W](int x, int y) {
+        return y * W + x;
+    };
+
+    size_t filled_count = 0;
+
+    for (int start_y = 0; start_y < H; ++start_y)
+    {
+        for (int start_x = 0; start_x < W; ++start_x)
+        {
+            const int start_index = index_of(start_x, start_y);
+            if (visited[start_index] || source[start_y][start_x].known)
+                continue;
+
+            std::vector<GridCoord> region;
+            std::deque<GridCoord> queue;
+            bool touches_border = false;
+            visited[start_index] = 1;
+            queue.push_back({start_x, start_y});
+
+            while (!queue.empty())
+            {
+                const GridCoord current = queue.front();
+                queue.pop_front();
+                region.push_back(current);
+                touches_border =
+                    touches_border ||
+                    current.x == 0 ||
+                    current.y == 0 ||
+                    current.x == W - 1 ||
+                    current.y == H - 1;
+
+                for (int dy = -1; dy <= 1; ++dy)
+                {
+                    for (int dx = -1; dx <= 1; ++dx)
+                    {
+                        if (dx == 0 && dy == 0)
+                            continue;
+
+                        const int nx = current.x + dx;
+                        const int ny = current.y + dy;
+                        if (nx < 0 || nx >= W || ny < 0 || ny >= H)
+                            continue;
+
+                        const int ni = index_of(nx, ny);
+                        if (visited[ni] || source[ny][nx].known)
+                            continue;
+
+                        visited[ni] = 1;
+                        queue.push_back({nx, ny});
+                    }
+                }
+            }
+
+            if (touches_border || static_cast<int>(region.size()) > max_region_cells)
+                continue;
+
+            std::unordered_set<int64_t> boundary_ids;
+            boundary_ids.reserve(region.size() * 4);
+            for (const auto& cell_coord : region)
+            {
+                for (int dy = -1; dy <= 1; ++dy)
+                {
+                    for (int dx = -1; dx <= 1; ++dx)
+                    {
+                        if (dx == 0 && dy == 0)
+                            continue;
+
+                        const int nx = cell_coord.x + dx;
+                        const int ny = cell_coord.y + dy;
+                        if (nx < 0 || nx >= W || ny < 0 || ny >= H)
+                            continue;
+
+                        const TerrainCell& nb = source[ny][nx];
+                        if (!nb.known || nb.cost < 0.0)
+                            continue;
+
+                        boundary_ids.insert(static_cast<int64_t>(ny) * static_cast<int64_t>(W) + nx);
+                    }
+                }
+            }
+
+            if (static_cast<int>(boundary_ids.size()) < min_boundary_known)
+                continue;
+
+            int wall_count = 0;
+            int blocked_count = 0;
+            double cost_sum = 0.0;
+            double confidence_sum = 0.0;
+            double slope_sum = 0.0;
+            double roughness_sum = 0.0;
+            double height_sum = 0.0;
+            double z_sum = 0.0;
+
+            for (const int64_t id : boundary_ids)
+            {
+                const int x = static_cast<int>(id % W);
+                const int y = static_cast<int>(id / W);
+                const TerrainCell& boundary = source[y][x];
+                const bool is_wall =
+                    boundary.layer_class == static_cast<int>(CellLayerClass::WallOrVerticalSurface);
+                const bool is_blocked =
+                    is_wall ||
+                    boundary.obstacle ||
+                    boundary.cost >= 100.0;
+
+                wall_count += is_wall ? 1 : 0;
+                blocked_count += is_blocked ? 1 : 0;
+                cost_sum += std::clamp(boundary.cost, 0.0, 100.0);
+                confidence_sum += boundary.confidence;
+                slope_sum += boundary.slope;
+                roughness_sum += boundary.roughness;
+                height_sum += boundary.height;
+                z_sum += boundary.z_p50;
+            }
+
+            const double inv_boundary = 1.0 / static_cast<double>(boundary_ids.size());
+            const double wall_fraction = static_cast<double>(wall_count) * inv_boundary;
+            const double blocked_fraction = static_cast<double>(blocked_count) * inv_boundary;
+            if (wall_fraction > max_wall_fraction || blocked_fraction > max_blocked_fraction)
+                continue;
+
+            const double filled_cost = std::clamp(
+                std::round(cost_sum * inv_boundary + unknown_region_fill_cost_penalty),
+                0.0,
+                100.0);
+            const double filled_confidence = std::clamp(confidence_sum * inv_boundary * 0.65, 0.0, 1.0);
+            const double filled_slope = slope_sum * inv_boundary;
+            const double filled_roughness = roughness_sum * inv_boundary;
+            const double filled_height = height_sum * inv_boundary;
+            const double filled_z = z_sum * inv_boundary;
+
+            for (const auto& cell_coord : region)
+            {
+                TerrainCell& target = grid_manager.global_grid[cell_coord.y][cell_coord.x];
+                if (target.known)
+                    continue;
+
+                target.known = true;
+                target.traversable = filled_cost < 100.0;
+                target.obstacle = filled_cost >= 100.0;
+                target.cost = filled_cost;
+                target.confidence = filled_confidence;
+                target.slope = filled_slope;
+                target.roughness = filled_roughness;
+                target.height = filled_height;
+                target.mean_z = filled_z;
+                target.z_min = filled_z;
+                target.z_max = filled_z;
+                target.z_p05 = filled_z;
+                target.z_p50 = filled_z;
+                target.z_p95 = filled_z;
+                target.layer_class = static_cast<int>(CellLayerClass::Floor);
+
+                const int64_t id = static_cast<int64_t>(cell_coord.y) * static_cast<int64_t>(W) + cell_coord.x;
+                if (occupied_ids.insert(id).second)
+                    occupied_global_cells.push_back(cell_coord);
+                ++filled_count;
+            }
+        }
+    }
+
+    return filled_count;
+}
+
+size_t ROSWrapper::smooth_traversability_costs()
+{
+    if (!enable_cost_smoothing ||
+        grid_manager.global_grid.empty() ||
+        grid_manager.global_grid[0].empty())
+        return 0;
+
+    const int H = static_cast<int>(grid_manager.global_grid.size());
+    const int W = static_cast<int>(grid_manager.global_grid[0].size());
+    const int iterations = std::max(0, cost_smoothing_iterations);
+    const int radius = std::max(1, cost_smoothing_radius);
+    const double neighbor_weight = std::clamp(cost_smoothing_neighbor_weight, 0.0, 1.0);
+    const double max_delta = std::max(0.0, cost_smoothing_max_cost_delta);
+
+    if (iterations == 0 || neighbor_weight <= 0.0)
+        return 0;
+
+    auto is_smoothable = [](const TerrainCell& cell) {
+        return cell.known &&
+               cell.cost >= 0.0 &&
+               cell.cost < 100.0 &&
+               !cell.obstacle &&
+               cell.layer_class != static_cast<int>(CellLayerClass::WallOrVerticalSurface) &&
+               cell.layer_class != static_cast<int>(CellLayerClass::CeilingOnly);
+    };
+
+    size_t changed_count = 0;
+
+    for (int iter = 0; iter < iterations; ++iter)
+    {
+        const TerrainGrid source = grid_manager.global_grid;
+        std::vector<double> smoothed_costs(static_cast<size_t>(H) * static_cast<size_t>(W), -1.0);
+
+        for (int y = 0; y < H; ++y)
+        {
+            for (int x = 0; x < W; ++x)
+            {
+                const TerrainCell& center = source[y][x];
+                if (!is_smoothable(center))
+                    continue;
+
+                int neighbor_count = 0;
+                double neighbor_cost_sum = 0.0;
+
+                for (int dy = -radius; dy <= radius; ++dy)
+                {
+                    const int ny = y + dy;
+                    if (ny < 0 || ny >= H)
+                        continue;
+
+                    for (int dx = -radius; dx <= radius; ++dx)
+                    {
+                        const int nx = x + dx;
+                        if ((dx == 0 && dy == 0) || nx < 0 || nx >= W)
+                            continue;
+                        if (dx * dx + dy * dy > radius * radius)
+                            continue;
+
+                        const TerrainCell& nb = source[ny][nx];
+                        if (!is_smoothable(nb))
+                            continue;
+                        if (std::abs(nb.cost - center.cost) > max_delta)
+                            continue;
+
+                        neighbor_cost_sum += nb.cost;
+                        ++neighbor_count;
+                    }
+                }
+
+                if (neighbor_count == 0)
+                    continue;
+
+                const double neighbor_mean = neighbor_cost_sum / static_cast<double>(neighbor_count);
+                const double new_cost = std::clamp(
+                    std::round(center.cost * (1.0 - neighbor_weight) + neighbor_mean * neighbor_weight),
+                    0.0,
+                    99.0);
+                smoothed_costs[static_cast<size_t>(y) * static_cast<size_t>(W) + x] = new_cost;
+            }
+        }
+
+        for (int y = 0; y < H; ++y)
+        {
+            for (int x = 0; x < W; ++x)
+            {
+                const double new_cost = smoothed_costs[static_cast<size_t>(y) * static_cast<size_t>(W) + x];
+                if (new_cost < 0.0)
+                    continue;
+
+                TerrainCell& cell = grid_manager.global_grid[y][x];
+                if (std::abs(cell.cost - new_cost) >= 0.5)
+                    ++changed_count;
+                cell.cost = new_cost;
+                cell.traversable = cell.cost < 100.0;
+            }
+        }
+    }
+
+    return changed_count;
 }
 
 void ROSWrapper::compute_step_heights_for_occupied()

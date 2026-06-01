@@ -3,16 +3,16 @@
   "frame_id": "map",
   "stamp": {
     "sec": 1632432146,
-    "nanosec": 951655230
+    "nanosec": 451527470
   },
-  "resolution": 0.25,
-  "width": 401,
-  "height": 561,
+  "resolution": 0.5,
+  "width": 201,
+  "height": 281,
   "origin": {
     "position": {
-      "x": -40.125,
-      "y": -40.125,
-      "z": -2.018697203
+      "x": -40.25,
+      "y": -40.25,
+      "z": -2.018889954
     },
     "orientation": {
       "x": 0.0,

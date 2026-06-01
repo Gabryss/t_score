@@ -129,6 +129,31 @@ class ROSWrapper : public rclcpp::Node
         double global_map_max_size = 300.0;
         int floating_floor_neighbor_radius = 2;
         double max_floor_height_jump = 0.80;
+        bool enable_global_floor_support = true;
+        double global_floor_seed_quantile = 0.10;
+        double global_floor_seed_height = 0.60;
+        double global_floor_max_step = 0.45;
+        bool enable_multires_unknown_fill = false;
+        double multires_fill_resolution = 0.50;
+        int multires_fill_min_known = 1;
+        bool enable_second_multires_unknown_fill = false;
+        double second_multires_fill_resolution = 1.00;
+        int second_multires_fill_min_known = 4;
+        bool enable_neighbor_gap_fill = false;
+        int neighbor_gap_fill_min_neighbors = 6;
+        double neighbor_gap_fill_cost_penalty = 5.0;
+        bool neighbor_gap_fill_skip_if_blocked_neighbor = true;
+        bool enable_unknown_region_fill = false;
+        int unknown_region_fill_max_cells = 80;
+        int unknown_region_fill_min_boundary_known = 8;
+        double unknown_region_fill_max_wall_fraction = 0.25;
+        double unknown_region_fill_max_blocked_fraction = 0.35;
+        double unknown_region_fill_cost_penalty = 8.0;
+        bool enable_cost_smoothing = false;
+        int cost_smoothing_iterations = 1;
+        int cost_smoothing_radius = 1;
+        double cost_smoothing_neighbor_weight = 0.35;
+        double cost_smoothing_max_cost_delta = 25.0;
 
         
 
@@ -192,6 +217,11 @@ class ROSWrapper : public rclcpp::Node
         void expandGlobalGridForCloud(const pcl::PointCloud<pcl::PointXYZ>& input);
         void analyze_global_grid();
         size_t suppress_floating_floor_cells();
+        size_t apply_global_floor_support();
+        size_t fill_unknown_cells_from_coarse_blocks(double fill_resolution, int min_known, bool skip_lethal_blocks);
+        size_t fill_unknown_cells_from_neighbors();
+        size_t fill_small_unknown_regions();
+        size_t smooth_traversability_costs();
         void compute_step_heights_for_occupied();
         void update_local_grid_from_global();
         void apply_footprint_inflation(TerrainGrid& grid);

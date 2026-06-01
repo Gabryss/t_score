@@ -72,15 +72,13 @@ install(DIRECTORY
 )
 
 if(BUILD_TESTING)
-  find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # comment the line when a copyright and license is added to all source files
-  set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # comment the line when this package is in a git repo and when
-  # a copyright and license is added to all source files
-  set(ament_cmake_cpplint_FOUND TRUE)
-  ament_lint_auto_find_test_dependencies()
+  enable_testing()
+  add_executable(test_tscore_classifier test/test_tscore_classifier.cpp)
+  target_link_libraries(test_tscore_classifier
+    ${PCL_LIBRARIES}
+    TScore
+  )
+  add_test(NAME test_tscore_classifier COMMAND test_tscore_classifier)
 endif()
 
 ament_package()
