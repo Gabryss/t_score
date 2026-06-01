@@ -67,6 +67,7 @@
     "costmap_image_topic": "/traversability_costmap",
     "costmap_image_output_path": "/home/gabriel/docker/t_score/output/traversability_costmap_final_cloud_risk.png",
     "costmap_metadata_output_path": "/home/gabriel/docker/t_score/output/traversability_costmap_final_cloud_risk.png.json",
+    "costmap_raw_output_path": "/home/gabriel/docker/t_score/output/traversability_costmap_final_cloud_risk.npz",
     "costmap_image_palette": "risk",
     "costmap_image_save_policy": "latest",
     "costmap_image_timeout": 180.0,
