@@ -3,7 +3,7 @@
     "pc_topic": "/rtabmap/cloud_map",
     "tf_topic":"/tf",
     "tf_static_topic":"/tf_static",
-    "traversability_profile":"mine_graph",
+    "traversability_profile":"mine_graph_high_res",
     "traversability_profiles":{
         "mine_graph":{
             "wall_cells_as_obstacles":false,
@@ -163,9 +163,9 @@
     "traversability_topic_local": "/traversability_costmap_local",
 
     "costmap_image_topic": "/traversability_costmap",
-    "costmap_image_output_path": "/home/gabriel/docker/t_score/output/traversability_costmap_final_cloud_risk.png",
-    "costmap_metadata_output_path": "/home/gabriel/docker/t_score/output/traversability_costmap_final_cloud_risk.png.json",
-    "costmap_raw_output_path": "/home/gabriel/docker/t_score/output/traversability_costmap_final_cloud_risk.npz",
+    "costmap_image_output_path": "/home/gabriel/docker/t_score/output/traversability_costmap_mine_graph_high_res_cloud_risk.png",
+    "costmap_metadata_output_path": "/home/gabriel/docker/t_score/output/traversability_costmap_mine_graph_high_res_cloud_risk.png.json",
+    "costmap_raw_output_path": "/home/gabriel/docker/t_score/output/traversability_costmap_mine_graph_high_res_cloud_risk.npz",
     "costmap_image_palette": "risk",
     "costmap_image_save_policy": "latest",
     "costmap_image_timeout": 180.0,
